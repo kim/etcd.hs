@@ -1,0 +1,8 @@
+resolver: lts-5.1
+packages:
+  - etcd-api/
+  - etcd-simple/
+extra-deps: []
+flags: {}
+extra-package-dbs: []
+compiler-check: newer-minor
