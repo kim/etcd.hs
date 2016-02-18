@@ -154,6 +154,7 @@ runKeysAPI = eval <=< viewT
     eval (Return              x) = return x
     eval (i@(Get    _ _) :>>= k) = go i >>= runKeysAPI . k
     eval (i@(Put    _ _) :>>= k) = go i >>= runKeysAPI . k
+    eval (i@(Post   _ _) :>>= k) = go i >>= runKeysAPI . k
     eval (i@(Delete _ _) :>>= k) = go i >>= runKeysAPI . k
 
     go f = do
@@ -174,6 +175,12 @@ runKeysAPI = eval <=< viewT
              }
     request (Put key' ps) rq
         = (\rq' -> rq' { method = "PUT"
+                       , path   = endpoint <> "/" <> encodeUtf8 key'
+                       })
+        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+        $ rq
+    request (Post key' ps) rq
+        = (\rq' -> rq' { method = "POST"
                        , path   = endpoint <> "/" <> encodeUtf8 key'
                        })
         . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))

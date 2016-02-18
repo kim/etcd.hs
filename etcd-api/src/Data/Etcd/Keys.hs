@@ -39,6 +39,11 @@ module Data.Etcd.Keys
     , pRefresh
     , pDir
 
+    , PostOptions
+    , postOptions
+    , cValue
+    , cTTL
+
     , DeleteOptions
     , deleteOptions
     , dRecursive
@@ -53,12 +58,14 @@ module Data.Etcd.Keys
 
       -- * KeysAPI
     , get
+    , get'
     , set
     , update
     , rm
     , rmr
     , rmdir
     , mkdir
+    , createInOrder
     , watch
     , watcher
     , refresh
@@ -90,6 +97,7 @@ type KeysAPI = ProgramT KeysF
 data KeysF a where
     Get    :: Key -> Either WatchOptions GetOptions -> KeysF Response
     Put    :: Key -> PutOptions                     -> KeysF Response
+    Post   :: Key -> PostOptions                    -> KeysF Response
     Delete :: Key -> DeleteOptions                  -> KeysF Response
 
 data GetOptions = GetOptions
@@ -174,6 +182,30 @@ instance QueryLike PutOptions where
         , if r then Just ("refresh", Just "true") else Nothing
         , if d then Just ("dir"    , Just "true") else Nothing
         ]
+
+data PostOptions = PostOptions
+    { _cValue :: Maybe Text
+    , _cTTL   :: Maybe Word64
+    } deriving Show
+
+postOptions :: PostOptions
+postOptions = PostOptions
+    { _cValue = Nothing
+    , _cTTL   = Nothing
+    }
+
+cValue :: Lens' PostOptions (Maybe Text)
+cValue = lens _cValue (\s a -> s { _cValue = a })
+
+cTTL :: Lens' PostOptions (Maybe Word64)
+cTTL = lens _cTTL (\s a -> s { _cTTL = a })
+
+instance QueryLike PostOptions where
+    toQuery (PostOptions v t) = catMaybes
+        [ (,) "value" . toQueryValue . toByteString' <$> v
+        , (,) "ttl"   . toQueryValue . toByteString' <$> t
+        ]
+
 
 data DeleteOptions = DeleteOptions
     { _dRecursive :: !Bool
@@ -315,7 +347,10 @@ instance QueryValueLike TTL where
 
 
 get :: Monad m => Key -> KeysAPI m Response
-get k = singleton $ Get k (Right getOptions)
+get k = get' k getOptions
+
+get' :: Monad m => Key -> GetOptions -> KeysAPI m Response
+get' k = singleton . Get k . Right
 
 set :: Monad m => Key -> Value -> Maybe TTL -> KeysAPI m Response
 set k v ttl' = singleton . Put k $
@@ -341,6 +376,11 @@ mkdir k ttl' = singleton . Put k $
 
 rmdir :: Monad m => Key -> KeysAPI m Response
 rmdir k = singleton $ Delete k (deleteOptions & lset dDir True)
+
+createInOrder :: Monad m => Key -> Maybe Value -> Maybe Word64 -> KeysAPI m Response
+createInOrder k v ttl' = singleton . Post k $
+    postOptions & lset cValue v
+                & lset cTTL   ttl'
 
 watch :: Monad m => Key -> Bool -> Maybe Word64 -> KeysAPI m Response
 watch k recur after = singleton . Get k . Left $
