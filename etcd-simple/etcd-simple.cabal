@@ -20,7 +20,7 @@ library
     Database.Etcd
 
   build-depends:
-      aeson                 (>= 0.8 && < 0.10) || > 0.11
+      aeson                 (>= 0.8 && < 0.10) || > 0.10
     , base                  >= 4.8 && < 5
     , bifunctors
     , bytestring

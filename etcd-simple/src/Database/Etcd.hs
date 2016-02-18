@@ -18,7 +18,6 @@ module Database.Etcd
     -- * Keys
     , Node            (..)
     , Response        (..)
-    , ResponseBody    (..)
     , SuccessResponse (..)
     , ErrorResponse   (..)
     , Key
@@ -98,9 +97,7 @@ data Env = Env
 makeLenses ''Env
 
 
-data EtcdError
-    = EtcdError       !ErrorResponse
-    | InvalidResponse String
+data EtcdError = InvalidResponse String
     deriving (Eq, Show, Typeable)
 
 instance Exception EtcdError
@@ -164,11 +161,7 @@ runKeysAPI = eval <=< viewT
         rs <- http (request f rq)
         if emptyResponse rs
             then go f
-            else case response rs of
-                    Left  e -> throwM $ InvalidResponse e
-                    Right x -> case responseBody x of
-                        Success _ -> pure x
-                        Error   e -> throwM $ EtcdError e
+            else either (throwM . InvalidResponse) pure (response rs)
 
     endpoint :: ByteString
     endpoint = "/v2/keys"
