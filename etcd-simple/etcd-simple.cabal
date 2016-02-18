@@ -1,7 +1,8 @@
 name:                etcd-simple
 version:             0.1.0.0
 synopsis:            A simple `etcd` client
-homepage:            https://github.com/kim/etcd.hs
+homepage:            https://github.com/kim/etcdpp
+bug-reports:         https://github.com/kim/etcdpp/issues
 license:             MPL-2.0
 license-file:        LICENSE
 author:              Kim Altintop
@@ -9,6 +10,10 @@ maintainer:          kim.altintop@gmail.com
 category:            Database
 build-type:          Simple
 cabal-version:       >=1.10
+
+source-repository head
+  type:     git
+  location: https://github.com/kim/etcdpp
 
 library
   exposed-modules:
