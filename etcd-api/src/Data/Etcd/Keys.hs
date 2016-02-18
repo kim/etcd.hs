@@ -6,21 +6,22 @@
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE Rank2Types        #-}
 
 module Data.Etcd.Keys
     ( -- * Types
       KeysAPI
-    , KeysF        (..)
-    , Node         (..)
-    , Response     (..)
-    , ResponseBody (..)
+    , KeysF           (..)
+    , Node            (..)
+    , Response        (..)
+    , ResponseBody    (..)
     , SuccessResponse (..)
     , ErrorResponse   (..)
+    , _Success
+    , _Error
 
     , Key
     , Value
-    , TTL          (..)
+    , TTL             (..)
 
     , GetOptions
     , getOptions
@@ -69,10 +70,10 @@ module Data.Etcd.Keys
 where
 
 import Control.Applicative
-import Control.Monad.Identity
 import Control.Monad.Operational
-import Data.Aeson                    (FromJSON (..))
+import Data.Aeson                    hiding (Error, Success, Value)
 import Data.ByteString.Conversion.To
+import Data.Etcd.Internal
 import Data.Function                 ((&))
 import Data.Int
 import Data.Maybe
@@ -238,16 +239,25 @@ instance QueryLike WatchOptions where
 
 data Node = Node
     { key           :: !Text
-    , dir           :: Maybe Bool
+    , dir           :: Bool
     , value         :: Maybe Text
-    , nodes         :: Maybe [Node]
+    , nodes         :: [Node]
     , createdIndex  :: !Word64
     , modifiedIndex :: !Word64
     , expiration    :: Maybe UTCTime
     , ttl           :: Maybe Int64
     } deriving (Eq, Show, Generic)
 
-instance FromJSON Node
+instance FromJSON Node where
+    parseJSON = withObject "Node" $ \o ->
+        Node <$> o .:  "key"
+             <*> o .:? "dir"           .!= False
+             <*> o .:? "value"
+             <*> o .:? "nodes"         .!= []
+             <*> o .:  "createdIndex"
+             <*> o .:  "modifiedIndex"
+             <*> o .:? "expiration"
+             <*> o .:? "ttl"
 
 data Response = Response
     { etcdClusterId :: !Text
@@ -255,7 +265,25 @@ data Response = Response
     , raftIndex     :: Maybe Word64
     , raftTerm      :: Maybe Word64
     , responseBody  :: !ResponseBody
-    } deriving (Show, Generic)
+    } deriving (Eq, Show)
+
+data ResponseBody
+    = Success !SuccessResponse
+    | Error   !ErrorResponse
+    deriving (Eq, Show)
+
+instance FromJSON ResponseBody where
+    parseJSON v = (Success <$> parseJSON v) <|> (Error <$> parseJSON v)
+
+_Success :: Prism' ResponseBody SuccessResponse
+_Success = prism Success $ \case
+    Success r -> Right r
+    x         -> Left  x
+
+_Error :: Prism' ResponseBody ErrorResponse
+_Error = prism Error $ \case
+    Error r -> Right r
+    x       -> Left  x
 
 data SuccessResponse = SuccessResponse
     { action   :: !Text
@@ -274,16 +302,9 @@ data ErrorResponse = ErrorResponse
 
 instance FromJSON ErrorResponse
 
-data ResponseBody
-    = Success !SuccessResponse
-    | Error   !ErrorResponse
-    deriving (Eq, Show)
 
-instance FromJSON ResponseBody where
-    parseJSON v = (Success <$> parseJSON v) <|> (Error <$> parseJSON v)
-
-type Key    = Text
-type Value  = Text
+type Key   = Text
+type Value = Text
 
 data TTL = NoTTL | TTL !Word64
     deriving Show
@@ -386,16 +407,3 @@ cadIdx :: Monad m
 cadIdx k idx v = singleton . Delete k $
     deleteOptions & lset dPrevIndex (Just idx)
                   & lset dPrevValue v
-
-
-type Lens s t a b = forall f. Functor f => (a -> f b) -> s -> f t
-
-type Lens' s a = Lens s s a a
-
-lens :: (s -> a) -> (s -> b -> t) -> Lens s t a b
-lens sa sbt afb s = sbt s <$> afb (sa s)
-{-# INLINE lens #-}
-
-lset :: Lens s t a b -> b -> s -> t
-lset l a = runIdentity . l (Identity . const a)
-{-# INLINE lset #-}

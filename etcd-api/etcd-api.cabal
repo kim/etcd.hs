@@ -28,11 +28,12 @@ library
 
   build-depends:
       aeson                 (>= 0.8 && < 0.10) || > 0.10
-    , base                  >=4.8 && <5
+    , base                  >= 4.8 && < 5
     , bytestring-conversion
     , http-types
     , mtl
     , operational
+    , profunctors
     , text
     , time
     , unordered-containers
