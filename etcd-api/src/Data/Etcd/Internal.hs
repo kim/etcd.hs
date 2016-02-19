@@ -17,10 +17,17 @@ module Data.Etcd.Internal
     , Prism
     , Prism'
     , prism
+
+    , Optic
+    , Optic'
+    , filtered
+
+    , Getting
     )
 where
 
-import Control.Monad.Identity
+import Control.Applicative    (Const)
+import Control.Monad.Identity (Identity (..))
 import Data.Aeson.Types
 import Data.Char
 import Data.Profunctor
@@ -43,7 +50,6 @@ stripFieldPrefix s = case dropWhile isLower s of
 --
 
 type Lens s t a b = forall f. Functor f => (a -> f b) -> s -> f t
-
 type Lens' s a = Lens s s a a
 
 lens :: (s -> a) -> (s -> b -> t) -> Lens s t a b
@@ -56,9 +62,19 @@ lset l a = runIdentity . l (Identity . const a)
 
 
 type Prism s t a b = forall p f. (Choice p, Applicative f) => p a (f b) -> p s (f t)
-
 type Prism' s a = Prism s s a a
 
 prism :: (b -> t) -> (s -> Either t a) -> Prism s t a b
 prism bt seta = dimap seta (either pure (fmap bt)) . right'
 {-# INLINE prism #-}
+
+
+type Optic p f s t a b = p a (f b) -> p s (f t)
+type Optic' p f s a = Optic p f s s a a
+
+filtered :: (Choice p, Applicative f) => (a -> Bool) -> Optic' p f a a
+filtered p = dimap (\x -> if p x then Right x else Left x) (either pure id) . right'
+{-# INLINE filtered #-}
+
+
+type Getting r s a = (a -> Const r a) -> s -> Const r s

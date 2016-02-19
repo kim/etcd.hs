@@ -19,6 +19,23 @@ module Data.Etcd.Keys
     , _Success
     , _Error
 
+    , _KeyNotFound
+    , _TestFailed
+    , _NotFile
+    , _NotDir
+    , _NodeExist
+    , _RootOnly
+    , _DirNotEmpty
+    , _Unauthorized
+    , _PrevValueRequired
+    , _TTLNaN
+    , _IndexNaN
+    , _InvalidField
+    , _RaftInternal
+    , _LeaderElect
+    , _WatcherCleared
+    , _EventIndexCleared
+
     , Key
     , Value
     , TTL             (..)
@@ -84,6 +101,8 @@ import Data.Etcd.Internal
 import Data.Function                 ((&))
 import Data.Int
 import Data.Maybe
+import Data.Monoid                   (First)
+import Data.Profunctor               (Choice)
 import Data.Text                     (Text)
 import Data.Time
 import Data.Word
@@ -333,6 +352,59 @@ data ErrorResponse = ErrorResponse
     } deriving (Eq, Show, Generic)
 
 instance FromJSON ErrorResponse
+
+_KeyNotFound :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_KeyNotFound = _Error . hasCode 100
+
+_TestFailed :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_TestFailed = _Error . hasCode 101
+
+_NotFile :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NotFile = _Error . hasCode 102
+
+_NotDir :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NotDir = _Error . hasCode 104
+
+_NodeExist :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NodeExist = _Error . hasCode 105
+
+_RootOnly :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_RootOnly = _Error . hasCode 107
+
+_DirNotEmpty :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_DirNotEmpty = _Error . hasCode 108
+
+_Unauthorized :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_Unauthorized = _Error . hasCode 110
+
+_PrevValueRequired :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_PrevValueRequired = _Error . hasCode 201
+
+_TTLNaN :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_TTLNaN = _Error . hasCode 202
+
+_IndexNaN :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_IndexNaN = _Error . hasCode 203
+
+_InvalidField :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_InvalidField = _Error . hasCode 209
+
+_RaftInternal :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_RaftInternal = _Error . hasCode 300
+
+_LeaderElect :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_LeaderElect = _Error . hasCode 301
+
+_WatcherCleared :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_WatcherCleared = _Error . hasCode 400
+
+_EventIndexCleared :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_EventIndexCleared = _Error . hasCode 401
+
+hasCode :: (Choice p, Applicative f)
+        => Word16
+        -> Optic' p f ErrorResponse ErrorResponse
+hasCode n = filtered ((n ==) . errorCode)
 
 
 type Key   = Text
