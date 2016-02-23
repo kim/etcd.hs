@@ -27,13 +27,15 @@ library
     , bytestring-conversion
     , etcd-api
     , exceptions
+    , free
     , http-client
     , http-types
     , lens
+    , monad-control
     , mtl
-    , operational
     , text
     , transformers
+    , transformers-base
 
   hs-source-dirs:    src
   default-language:  Haskell2010

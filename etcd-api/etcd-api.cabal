@@ -17,11 +17,10 @@ source-repository head
 
 library
   exposed-modules:
-    Data.Etcd
-    Data.Etcd.Keys
-    Data.Etcd.Members
-    Data.Etcd.Misc
-    Data.Etcd.Stats
+    Control.Monad.Trans.Etcd
+    Data.Etcd.Free
+    Data.Etcd.Lens
+    Data.Etcd.Types
 
   other-modules:
     Data.Etcd.Internal
@@ -30,12 +29,16 @@ library
       aeson                 (>= 0.8 && < 0.10) || > 0.10
     , base                  >= 4.8 && < 5
     , bytestring-conversion
+    , exceptions
+    , free                  >= 4.12
     , http-types
+    , monad-control
     , mtl
-    , operational
     , profunctors
     , text
     , time
+    , transformers
+    , transformers-base
     , unordered-containers
 
   ghc-options:

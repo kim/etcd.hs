@@ -2,90 +2,47 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE GADTs                 #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE UndecidableInstances       #-}
 
 module Database.Etcd
-    ( Client
-    , EtcdError       (..)
+    ( Env
+    , HasEnv    (..)
+    , Client
+    , EtcdError (..)
 
+    , mkEnv
     , runClient
     , runClient'
-
-    -- * Keys
-    , Node            (..)
-    , Response        (..)
-    , SuccessResponse (..)
-    , ErrorResponse   (..)
-    , Key
-    , Value
-    , TTL             (..)
-    , get
-    , set
-    , update
-    , rm
-    , rmr
-    , rmdir
-    , mkdir
-    , watch
-    , watcher
-    , refresh
-    , casVal
-    , casIdx
-    , cadVal
-    , cadIdx
-
-    -- * Members
-    , Members         (..)
-    , Member          (..)
-    , URL             (..)
-    , PeerURLs        (..)
-    , listMembers
-    , addMember
-    , deleteMember
-    , updateMember
-
-    -- * Stats
-    , LeaderStats     (..)
-    , FollowerStats   (..)
-    , FollowerCounts  (..)
-    , FollowerLatency (..)
-    , SelfStats       (..)
-    , LeaderInfo      (..)
-    , StoreStats      (..)
-    , getLeaderStats
-    , getSelfStats
-    , getStoreStats
-
-    -- * Misc
-    , Version         (..)
-    , Health          (..)
-    , getVersion
-    , getHealth
     )
 where
 
-import           Control.Lens               (view)
-import           Control.Lens.TH            (makeLenses)
+import           Control.Lens                (Lens', view)
+import           Control.Lens.TH             (makeLenses)
+import           Control.Monad.Base
 import           Control.Monad.Catch
+import           Control.Monad.Free.Class
 import           Control.Monad.IO.Class
-import           Control.Monad.Operational  hiding (view)
 import           Control.Monad.Reader
-import           Data.Aeson                 (FromJSON (..), eitherDecode, encode)
+import           Control.Monad.Trans.Control
+import           Control.Monad.Trans.Etcd
+import           Data.Aeson                  (FromJSON, eitherDecode, encode)
 import           Data.Bitraversable
-import           Data.ByteString            (ByteString)
+import qualified Data.ByteString             as Strict
 import           Data.ByteString.Conversion
-import qualified Data.ByteString.Lazy       as Lazy
-import           Data.Etcd
+import qualified Data.ByteString.Lazy        as Lazy
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Text.Encoding
 import           Data.Typeable
-import           Network.HTTP.Client        (Request (..))
-import qualified Network.HTTP.Client        as HTTP
+import           Network.HTTP.Client         (Request (..))
+import qualified Network.HTTP.Client         as HTTP
 import           Network.HTTP.Types
 
 
@@ -93,8 +50,15 @@ data Env = Env
     { _baseReq :: !Request
     , _httpMgr :: !HTTP.Manager
     }
-
 makeLenses ''Env
+
+class HasEnv a where
+    baseRequest :: Lens' a Request
+    httpManager :: Lens' a HTTP.Manager
+
+instance HasEnv Env where
+    baseRequest = baseReq
+    httpManager = httpMgr
 
 
 data EtcdError = InvalidResponse String
@@ -102,212 +66,180 @@ data EtcdError = InvalidResponse String
 
 instance Exception EtcdError
 
+newtype Client e a = Client { client :: EtcdT (ReaderT e IO) a }
+    deriving ( Functor
+             , Applicative
+             , Monad
+             , MonadIO
+             , MonadThrow
+             , MonadCatch
+             --, MonadReader e
+             , MonadBase IO
+             , MonadFree EtcdF
+             )
 
-type Client = ReaderT Env
+instance MonadBaseControl IO (Client e) where
+    type StM (Client e) a = StM (EtcdT (ReaderT e IO)) a
 
-runClient
-    :: ( MonadIO     m
-       , MonadThrow  m
-       , EvalEtcdAPI f
-       )
-    => String
-    -> f (Client m) b
-    -> m b
-runClient url f = do
+    liftBaseWith f = Client $ liftBaseWith $ \run -> f (run . client)
+    restoreM       = Client . restoreM
+
+
+runClient :: (MonadIO m, HasEnv e) => e -> Client e a -> m a
+runClient e a = liftIO $ runReaderT (runEtcdT eval (client a)) e
+
+runClient' :: (MonadIO m, MonadThrow m) => String -> Client Env a -> m a
+runClient' url a = do
     mgr <- liftIO $ HTTP.newManager HTTP.defaultManagerSettings
-    runClient' url mgr f
+    env <- mkEnv url mgr
+    runClient env a
 
-runClient'
-    :: ( MonadIO     m
-       , MonadThrow  m
-       , EvalEtcdAPI f
-       )
-    => String
-    -> HTTP.Manager
-    -> f (ReaderT Env m) b
-    -> m b
-runClient' url mgr f = mkEnv >>= runReaderT (eval f)
+
+mkEnv :: MonadThrow m => String -> HTTP.Manager -> m Env
+mkEnv url mgr = Env <$> HTTP.parseUrl url <*> pure mgr
+
+
+eval :: ( MonadIO       m
+        , MonadThrow    m
+        , MonadReader e m
+        , HasEnv      e
+        )
+     => EtcdF (m a)
+     -> m a
+eval f = view baseRequest >>= go f
   where
-    mkEnv = do
-        rq <- HTTP.parseUrl url
-        pure Env
-            { _baseReq = rq { checkStatus = \_ _ _ -> Nothing }
-            , _httpMgr = mgr
-            }
+    go (GetKey k ps next) rq
+        = http ( ignoreStatus
+               . HTTP.setQueryString (toQuery ps)
+               $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
+      >>= throwInvalidResponse . keyspaceResponse
+      >>= next
+    go (PutKey k ps next) rq
+        = http ( ignoreStatus
+               . (\rq' -> rq' { method = "PUT" })
+               . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+               $ mkRq rq PUT (keysPath <> encodeUtf8 k) Nothing)
+      >>= throwInvalidResponse . keyspaceResponse
+      >>= next
+    go (PostKey k ps next) rq
+        = http ( ignoreStatus
+               . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+               $ mkRq rq POST (keysPath <> encodeUtf8 k) Nothing)
+      >>= throwInvalidResponse . keyspaceResponse
+      >>= next
+    go (DeleteKey k ps next) rq
+        = http ( ignoreStatus
+               . HTTP.setQueryString (toQuery ps)
+               $ mkRq rq DELETE (keysPath <> encodeUtf8 k) Nothing)
+      >>= throwInvalidResponse . keyspaceResponse
+      >>= next
+    go (WatchKey k ps next) rq
+        = http ( ignoreStatus
+               . HTTP.setQueryString (toQuery ps)
+               $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
+      >>= \case rs | emptyResponse rs -> go (WatchKey k ps next) rq
+                   | otherwise        -> throwInvalidResponse (keyspaceResponse rs)
+                                     >>= next
 
-    eval = evalEtcd EtcdAPI
-        { evalKeysAPI    = runKeysAPI
-        , evalMembersAPI = runMembersAPI
-        , evalStatsAPI   = runStatsAPI
-        , evalMiscAPI    = runMiscAPI
-        }
+    go (ListMembers next) rq
+        = http (mkRq rq GET membersPath Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
+    go (AddMember us next) rq
+        = http (mkRq rq POST membersPath (Just (encode us)))
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
+    go (DeleteMember m next) rq
+        = empty (mkRq rq DELETE (membersPath <> encodeUtf8 m) Nothing)
+       >> next
+    go (UpdateMember m us next) rq
+        = empty (mkRq rq PUT (membersPath <> encodeUtf8 m) (Just (encode us)))
+       >> next
 
-runKeysAPI
-    :: ( MonadIO         m
-       , MonadThrow      m
-       , MonadReader Env m
-       )
-    => KeysAPI m a
-    -> m a
-runKeysAPI = eval <=< viewT
-  where
-    eval (Return              x) = return x
-    eval (i@(Get    _ _) :>>= k) = go i >>= runKeysAPI . k
-    eval (i@(Put    _ _) :>>= k) = go i >>= runKeysAPI . k
-    eval (i@(Post   _ _) :>>= k) = go i >>= runKeysAPI . k
-    eval (i@(Delete _ _) :>>= k) = go i >>= runKeysAPI . k
+    go (GetLeaderStats next) rq
+        = http (mkRq rq GET (statsPath <> "leader") Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
+    go (GetSelfStats   next) rq
+        = http (mkRq rq GET (statsPath <> "self") Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
+    go (GetStoreStats  next) rq
+        = http (mkRq rq GET (statsPath <> "store") Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
 
-    go f = do
-        rq <- view baseReq
-        rs <- http (request f rq)
-        if emptyResponse rs
-            then go f
-            else either (throwM . InvalidResponse) pure (response rs)
-
-    endpoint :: ByteString
-    endpoint = "/v2/keys"
-
-    request :: KeysF a -> Request -> Request
-    request (Get key' ps) rq
-        = HTTP.setQueryString (either toQuery toQuery ps)
-        $ rq { method = "GET"
-             , path   = endpoint <> "/" <> encodeUtf8 key'
-             }
-    request (Put key' ps) rq
-        = (\rq' -> rq' { method = "PUT"
-                       , path   = endpoint <> "/" <> encodeUtf8 key'
-                       })
-        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ rq
-    request (Post key' ps) rq
-        = (\rq' -> rq' { method = "POST"
-                       , path   = endpoint <> "/" <> encodeUtf8 key'
-                       })
-        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ rq
-    request (Delete key' ps) rq
-        = HTTP.setQueryString (toQuery ps)
-        $ rq { method = "DELETE"
-             , path   = endpoint <> "/" <> encodeUtf8 key'
-             }
-
-    response :: HTTP.Response Lazy.ByteString -> Either String Response
-    response rs = do
-        let hdrs = HTTP.responseHeaders rs
-            bdy  = HTTP.responseBody    rs
-        cid <- let h = "x-etcd-cluster-id" in expect h (header h hdrs)
-        idx <- let h = "x-etcd-index"      in expect h (header h hdrs)
-        rsb <- eitherDecode bdy
-        pure Response
-            { etcdClusterId = cid
-            , etcdIndex     = idx
-            , raftIndex     = header "x-raft-index" hdrs
-            , raftTerm      = header "x-raft-term"  hdrs
-            , responseBody  = rsb
-            }
+    go (GetVersion next) rq
+        = http (mkRq rq GET versionPath Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
+    go (GetHealth  next) rq
+        = http (mkRq rq GET healthPath Nothing)
+      >>= throwInvalidResponse . jsonResponse
+      >>= next
 
     emptyResponse r
         = statusIsSuccessful (HTTP.responseStatus r)
        && Lazy.null (HTTP.responseBody r)
 
+    ignoreStatus rq = rq { checkStatus = \_ _ _ -> Nothing }
+
+
+empty :: (MonadIO m, MonadReader e m, HasEnv e) => Request -> m ()
+empty rq = view httpManager >>= liftIO . HTTP.httpNoBody rq >> return ()
+
+http :: ( MonadIO       m
+        , MonadReader e m
+        , HasEnv      e
+        )
+     => Request
+     -> m (HTTP.Response Lazy.ByteString)
+http rq = view httpManager >>= liftIO . HTTP.httpLbs rq
+
+mkRq :: Request -> StdMethod -> Strict.ByteString -> Maybe Lazy.ByteString -> Request
+mkRq base m p b = base
+    { method      = renderStdMethod m
+    , path        = p
+    , requestBody = maybe mempty HTTP.RequestBodyLBS b
+    }
+
+keysPath :: Strict.ByteString
+keysPath = "/v2/keys/"
+
+membersPath :: Strict.ByteString
+membersPath = "/v2/members/"
+
+statsPath :: Strict.ByteString
+statsPath = "/v2/stats/"
+
+versionPath :: Strict.ByteString
+versionPath = "/version"
+
+healthPath :: Strict.ByteString
+healthPath = "/health"
+
+throwInvalidResponse :: MonadThrow m => Either String b -> m b
+throwInvalidResponse (Left  e) = throwM $ InvalidResponse e
+throwInvalidResponse (Right r) = pure r
+
+keyspaceResponse :: HTTP.Response Lazy.ByteString -> Either String Response
+keyspaceResponse rs = do
+    let hdrs = HTTP.responseHeaders rs
+        bdy  = HTTP.responseBody    rs
+    cid <- let h = "x-etcd-cluster-id" in expect h (header h hdrs)
+    idx <- let h = "x-etcd-index"      in expect h (header h hdrs)
+    rsb <- eitherDecode bdy
+    pure Response
+        { etcdClusterId = cid
+        , etcdIndex     = idx
+        , raftIndex     = header "x-raft-index" hdrs
+        , raftTerm      = header "x-raft-term"  hdrs
+        , responseBody  = rsb
+        }
+  where
     header h hs  = fromByteString =<< lookup h hs
     expect h     = maybe (Left (unexpected h)) Right
     unexpected h = "Unexpected response: Header " ++ show h ++ " not present"
 
-runStatsAPI
-    :: ( MonadIO         m
-       , MonadThrow      m
-       , MonadReader Env m
-       )
-    => StatsAPI m a
-    -> m a
-runStatsAPI = eval <=< viewT
-  where
-    eval (Return                x) = return x
-    eval (i@GetLeaderStats :>>= k) = json (request i) >>= runStatsAPI . k
-    eval (i@GetSelfStats   :>>= k) = json (request i) >>= runStatsAPI . k
-    eval (i@GetStoreStats  :>>= k) = json (request i) >>= runStatsAPI . k
-
-    endpoint :: ByteString
-    endpoint = "/v2/stats"
-
-    request :: StatsF a -> Request -> Request
-    request GetLeaderStats rq = rq { method = "GET", path = endpoint <> "/leader" }
-    request GetSelfStats   rq = rq { method = "GET", path = endpoint <> "/self"   }
-    request GetStoreStats  rq = rq { method = "GET", path = endpoint <> "/store"  }
-
-runMembersAPI
-    :: ( MonadIO         m
-       , MonadThrow      m
-       , MonadReader Env m
-       )
-    => MembersAPI m a
-    -> m a
-runMembersAPI = eval <=< viewT
-  where
-    eval (Return                    x) = return x
-    eval (i@ListMembers        :>>= k) = json (request i) >>= runMembersAPI . k
-    eval (i@(AddMember      _) :>>= k) = json (request i) >>= runMembersAPI . k
-    eval (i@(DeleteMember   _) :>>= k) = nb i >>= runMembersAPI . k
-    eval (i@(UpdateMember _ _) :>>= k) = nb i >>= runMembersAPI . k
-
-    nb f = do
-        rq  <- view baseReq
-        mgr <- view httpMgr
-        liftIO (HTTP.httpNoBody (request f rq) mgr) *> pure ()
-
-    endpoint :: ByteString
-    endpoint = "/v2/members"
-
-    request :: MembersF a -> Request -> Request
-    request ListMembers rq = rq
-        { method = "GET"
-        , path   = endpoint
-        }
-    request (AddMember us) rq = rq
-        { method = "POST"
-        , path   = endpoint
-        , requestBody = HTTP.RequestBodyLBS (encode us)
-        }
-    request (DeleteMember m) rq = rq
-        { method = "DELETE"
-        , path   = endpoint <> "/" <> encodeUtf8 m
-        }
-    request (UpdateMember m us) rq = rq
-        { method = "PUT"
-        , path   = endpoint <> "/" <> encodeUtf8 m
-        , requestBody = HTTP.RequestBodyLBS (encode us)
-        }
-
-runMiscAPI
-    :: ( MonadIO         m
-       , MonadThrow      m
-       , MonadReader Env m
-       )
-    => MiscAPI m a
-    -> m a
-runMiscAPI = eval <=< viewT
-  where
-    eval (Return            x) = return x
-    eval (i@GetVersion :>>= k) = json (request i) >>= runMiscAPI . k
-    eval (i@GetHealth  :>>= k) = json (request i) >>= runMiscAPI . k
-
-    request :: MiscF a -> Request -> Request
-    request GetVersion rq = rq { method = "GET", path = "/version" }
-    request GetHealth  rq = rq { method = "GET", path = "/health"  }
-
-
-json :: ( MonadIO         m
-        , MonadThrow      m
-        , MonadReader Env m
-        , FromJSON    a
-        )
-     => (Request -> Request)
-     -> m a
-json mkRq = do
-    rq <- view baseReq
-    rs <- eitherDecode . HTTP.responseBody <$> http (mkRq rq)
-    either (throwM . InvalidResponse) pure rs
-
-http :: (MonadIO m, MonadReader Env m) => Request -> m (HTTP.Response Lazy.ByteString)
-http rq = view httpMgr >>= liftIO . HTTP.httpLbs rq
+jsonResponse :: FromJSON a => HTTP.Response Lazy.ByteString -> Either String a
+jsonResponse = eitherDecode . HTTP.responseBody
