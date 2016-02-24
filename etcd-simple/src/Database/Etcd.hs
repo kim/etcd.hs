@@ -3,11 +3,12 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
@@ -20,75 +21,120 @@ module Database.Etcd
     , mkEnv
     , runClient
     , runClient'
+
+    , module Control.Monad.Trans.Etcd
     )
 where
 
-import           Control.Lens                (Lens', view)
-import           Control.Lens.TH             (makeLenses)
+import           Control.Lens                 (Lens', lens, view)
 import           Control.Monad.Base
 import           Control.Monad.Catch
 import           Control.Monad.Free.Class
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
+import qualified Control.Monad.RWS.Lazy       as LRW
+import qualified Control.Monad.RWS.Strict     as RW
+import qualified Control.Monad.State.Lazy     as LS
+import qualified Control.Monad.State.Strict   as S
 import           Control.Monad.Trans.Control
 import           Control.Monad.Trans.Etcd
-import           Data.Aeson                  (FromJSON, eitherDecode, encode)
+import           Control.Monad.Trans.Except   (ExceptT)
+import           Control.Monad.Trans.Identity (IdentityT)
+import           Control.Monad.Trans.List     (ListT)
+import           Control.Monad.Trans.Maybe    (MaybeT)
+import qualified Control.Monad.Writer.Lazy    as LW
+import qualified Control.Monad.Writer.Strict  as W
+import           Data.Aeson                   (FromJSON, eitherDecode, encode)
 import           Data.Bitraversable
-import qualified Data.ByteString             as Strict
+import qualified Data.ByteString              as Strict
 import           Data.ByteString.Conversion
-import qualified Data.ByteString.Lazy        as Lazy
+import qualified Data.ByteString.Lazy         as Lazy
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Text.Encoding
 import           Data.Typeable
-import           Network.HTTP.Client         (Request (..))
-import qualified Network.HTTP.Client         as HTTP
+import           Network.HTTP.Client          (Request (..))
+import qualified Network.HTTP.Client          as HTTP
 import           Network.HTTP.Types
 
 
 data Env = Env
-    { _baseReq :: !Request
-    , _httpMgr :: !HTTP.Manager
+    { _baseRequest :: !Request
+    , _httpManager :: !HTTP.Manager
     }
-makeLenses ''Env
 
 class HasEnv a where
+    environment :: Lens' a Env
+
     baseRequest :: Lens' a Request
+    baseRequest = environment . go
+      where
+        go = lens _baseRequest (\s a -> s { _baseRequest = a })
+
     httpManager :: Lens' a HTTP.Manager
+    httpManager = environment . go
+      where
+        go = lens _httpManager (\s a -> s { _httpManager = a })
 
 instance HasEnv Env where
-    baseRequest = baseReq
-    httpManager = httpMgr
-
+    environment = id
 
 data EtcdError = InvalidResponse String
     deriving (Eq, Show, Typeable)
 
 instance Exception EtcdError
 
-newtype Client e a = Client { client :: EtcdT (ReaderT e IO) a }
+newtype Client a = Client { client :: EtcdT (ReaderT Env IO) a }
     deriving ( Functor
              , Applicative
              , Monad
              , MonadIO
              , MonadThrow
              , MonadCatch
-             --, MonadReader e
-             , MonadBase IO
-             , MonadFree EtcdF
+             , MonadReader Env
+             , MonadBase   IO
+             , MonadFree   EtcdF
              )
 
-instance MonadBaseControl IO (Client e) where
-    type StM (Client e) a = StM (EtcdT (ReaderT e IO)) a
+instance MonadBaseControl IO Client where
+    type StM Client a = StM (EtcdT (ReaderT Env IO)) a
 
     liftBaseWith f = Client $ liftBaseWith $ \run -> f (run . client)
     restoreM       = Client . restoreM
 
 
-runClient :: (MonadIO m, HasEnv e) => e -> Client e a -> m a
-runClient e a = liftIO $ runReaderT (runEtcdT eval (client a)) e
+class ( Functor         m
+      , Applicative     m
+      , Monad           m
+      , MonadIO         m
+      , MonadCatch      m
+      , MonadReader Env m
+      )
+      => MonadClient m
+  where
+    liftClient :: Client a -> m a
 
-runClient' :: (MonadIO m, MonadThrow m) => String -> Client Env a -> m a
+instance MonadClient Client where
+    liftClient = id
+
+instance            MonadClient m  => MonadClient (IdentityT        m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (ListT            m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (MaybeT           m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (ExceptT        e m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (ReaderT      Env m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (S.StateT       s m) where liftClient = lift . liftClient
+instance            MonadClient m  => MonadClient (LS.StateT      s m) where liftClient = lift . liftClient
+instance (Monoid w, MonadClient m) => MonadClient (W.WriterT    w   m) where liftClient = lift . liftClient
+instance (Monoid w, MonadClient m) => MonadClient (LW.WriterT   w   m) where liftClient = lift . liftClient
+instance (Monoid w, MonadClient m) => MonadClient (RW.RWST  Env w s m) where liftClient = lift . liftClient
+instance (Monoid w, MonadClient m) => MonadClient (LRW.RWST Env w s m) where liftClient = lift . liftClient
+
+
+runClient :: (MonadIO m, HasEnv e) => e -> Client a -> m a
+runClient e a = liftIO $
+    runReaderT (runEtcdT eval (client a)) (view environment e)
+
+runClient' :: (MonadIO m, MonadThrow m) => String -> Client a -> m a
 runClient' url a = do
     mgr <- liftIO $ HTTP.newManager HTTP.defaultManagerSettings
     env <- mkEnv url mgr

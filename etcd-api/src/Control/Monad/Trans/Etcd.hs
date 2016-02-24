@@ -20,6 +20,7 @@ import Control.Monad
 import Control.Monad.Base
 import Control.Monad.Catch
 import Control.Monad.IO.Class
+import Control.Monad.Reader.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
 import Control.Monad.Trans.Free        (FreeF (Pure), FreeT (..))
@@ -38,6 +39,7 @@ newtype EtcdT m a = EtcdT { unEtcdT :: FT EtcdF m a }
              , MonadTrans
              , MonadThrow
              , MonadCatch
+             , MonadReader e
              )
 
 instance MonadBase b m => MonadBase b (EtcdT m) where
