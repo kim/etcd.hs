@@ -17,18 +17,14 @@ where
 
 import Control.Applicative
 import Control.Monad
-import Control.Monad.Base
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Control.Monad.Reader.Class
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Control
-import Control.Monad.Trans.Free        (FreeF (Pure), FreeT (..))
 import Control.Monad.Trans.Free.Church
 import Data.Etcd.Free
 
 
-newtype EtcdT m a = EtcdT { unEtcdT :: FT EtcdF m a }
+newtype EtcdT m a = EtcdT (FT EtcdF m a)
     deriving ( Functor
              , Applicative
              , Alternative
@@ -39,23 +35,7 @@ newtype EtcdT m a = EtcdT { unEtcdT :: FT EtcdF m a }
              , MonadTrans
              , MonadThrow
              , MonadCatch
-             , MonadReader e
              )
-
-instance MonadBase b m => MonadBase b (EtcdT m) where
-    liftBase = liftBaseDefault
-
-instance MonadBaseControl b m => MonadBaseControl b (EtcdT m) where
-    type StM (EtcdT m) a = StM m (FreeF EtcdF a (FreeT EtcdF m a))
-
-    liftBaseWith f = EtcdT . toFT . FreeT . fmap Pure $
-        liftBaseWith $ \runInBase ->
-            f $ \k ->
-                runInBase $
-                    runFreeT (fromFT (unEtcdT k))
-
-    restoreM = EtcdT . toFT . FreeT . restoreM
-
 
 runEtcdT :: MonadCatch m => (EtcdF (m a) -> m a) -> EtcdT m a -> m a
 runEtcdT f (EtcdT m) = iterT f m

@@ -11,6 +11,7 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE ViewPatterns               #-}
 
 module Database.Etcd
     ( Env
@@ -19,15 +20,17 @@ module Database.Etcd
     , EtcdError (..)
 
     , mkEnv
+    , mkEnv'
     , runClient
     , runClient'
+
+    , runEtcdIO
 
     , module Control.Monad.Trans.Etcd
     )
 where
 
 import           Control.Lens                 (Lens', lens, view)
-import           Control.Monad.Base
 import           Control.Monad.Catch
 import           Control.Monad.Free.Class
 import           Control.Monad.IO.Class
@@ -36,7 +39,6 @@ import qualified Control.Monad.RWS.Lazy       as LRW
 import qualified Control.Monad.RWS.Strict     as RW
 import qualified Control.Monad.State.Lazy     as LS
 import qualified Control.Monad.State.Strict   as S
-import           Control.Monad.Trans.Control
 import           Control.Monad.Trans.Etcd
 import           Control.Monad.Trans.Except   (ExceptT)
 import           Control.Monad.Trans.Identity (IdentityT)
@@ -47,8 +49,10 @@ import qualified Control.Monad.Writer.Strict  as W
 import           Data.Aeson                   (FromJSON, eitherDecode, encode)
 import           Data.Bitraversable
 import qualified Data.ByteString              as Strict
+import           Data.ByteString.Builder      (charUtf8, toLazyByteString)
 import           Data.ByteString.Conversion
 import qualified Data.ByteString.Lazy         as Lazy
+import           Data.List                    (intersperse)
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Text.Encoding
@@ -56,11 +60,14 @@ import           Data.Typeable
 import           Network.HTTP.Client          (Request (..))
 import qualified Network.HTTP.Client          as HTTP
 import           Network.HTTP.Types
+import qualified System.Logger                as Log
+import           System.Logger.Class          hiding (eval)
 
 
 data Env = Env
     { _baseRequest :: !Request
     , _httpManager :: !HTTP.Manager
+    , _logger      :: !Log.Logger
     }
 
 class HasEnv a where
@@ -76,6 +83,11 @@ class HasEnv a where
       where
         go = lens _httpManager (\s a -> s { _httpManager = a })
 
+    logger      :: Lens' a Log.Logger
+    logger      = environment . go
+      where
+        go = lens _logger (\s a -> s { _logger = a })
+
 instance HasEnv Env where
     environment = id
 
@@ -84,7 +96,7 @@ data EtcdError = InvalidResponse String
 
 instance Exception EtcdError
 
-newtype Client a = Client { client :: EtcdT (ReaderT Env IO) a }
+newtype Client a = Client { client :: ReaderT Env (EtcdT IO) a }
     deriving ( Functor
              , Applicative
              , Monad
@@ -92,15 +104,11 @@ newtype Client a = Client { client :: EtcdT (ReaderT Env IO) a }
              , MonadThrow
              , MonadCatch
              , MonadReader Env
-             , MonadBase   IO
              , MonadFree   EtcdF
              )
 
-instance MonadBaseControl IO Client where
-    type StM Client a = StM (EtcdT (ReaderT Env IO)) a
-
-    liftBaseWith f = Client $ liftBaseWith $ \run -> f (run . client)
-    restoreM       = Client . restoreM
+instance MonadLogger Client where
+    log l m = view logger >>= \lgr ->  Log.log lgr l m
 
 
 class ( Functor         m
@@ -131,97 +139,105 @@ instance (Monoid w, MonadClient m) => MonadClient (LRW.RWST Env w s m) where lif
 
 
 runClient :: (MonadIO m, HasEnv e) => e -> Client a -> m a
-runClient e a = liftIO $
-    runReaderT (runEtcdT eval (client a)) (view environment e)
+runClient (view environment -> e) a = liftIO $
+    runEtcdT (runEtcdIO e) (runReaderT (client a) e)
 
-runClient' :: (MonadIO m, MonadThrow m) => String -> Client a -> m a
-runClient' url a = do
+runClient' :: (MonadIO m, MonadCatch m) => String -> Client a -> m a
+runClient' url a = mkEnv' url >>= (`runClient` a)
+
+mkEnv :: MonadThrow m => String -> HTTP.Manager -> Log.Logger -> m Env
+mkEnv url mgr lgr = Env <$> HTTP.parseUrl url <*> pure mgr <*> pure lgr
+
+mkEnv' :: (MonadIO m, MonadThrow m) => String -> m Env
+mkEnv' url = do
     mgr <- liftIO $ HTTP.newManager HTTP.defaultManagerSettings
-    env <- mkEnv url mgr
-    runClient env a
+    lgr <- Log.new $ Log.setName (Just "etcd-simple") Log.defSettings
+    mkEnv url mgr lgr
 
 
-mkEnv :: MonadThrow m => String -> HTTP.Manager -> m Env
-mkEnv url mgr = Env <$> HTTP.parseUrl url <*> pure mgr
-
-
-eval :: ( MonadIO       m
-        , MonadThrow    m
-        , MonadReader e m
-        , HasEnv      e
-        )
-     => EtcdF (m a)
-     -> m a
-eval f = view baseRequest >>= go f
+runEtcdIO :: (MonadIO m, MonadThrow m) => Env -> EtcdF (m a) -> m a
+runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
   where
     go (GetKey k ps next) rq
-        = http ( ignoreStatus
-               . HTTP.setQueryString (toQuery ps)
-               $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
+        = http env ( ignoreStatus
+                   . HTTP.setQueryString (toQuery ps)
+                   $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
       >>= throwInvalidResponse . keyspaceResponse
+      >>= debugRs
       >>= next
     go (PutKey k ps next) rq
-        = http ( ignoreStatus
-               . (\rq' -> rq' { method = "PUT" })
-               . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-               $ mkRq rq PUT (keysPath <> encodeUtf8 k) Nothing)
+        = http env ( ignoreStatus
+                   . (\rq' -> rq' { method = "PUT" })
+                   . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+                   $ mkRq rq PUT (keysPath <> encodeUtf8 k) Nothing)
       >>= throwInvalidResponse . keyspaceResponse
+      >>= debugRs
       >>= next
     go (PostKey k ps next) rq
-        = http ( ignoreStatus
-               . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-               $ mkRq rq POST (keysPath <> encodeUtf8 k) Nothing)
+        = http env ( ignoreStatus
+                   . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+                   $ mkRq rq POST (keysPath <> encodeUtf8 k) Nothing)
       >>= throwInvalidResponse . keyspaceResponse
+      >>= debugRs
       >>= next
     go (DeleteKey k ps next) rq
-        = http ( ignoreStatus
-               . HTTP.setQueryString (toQuery ps)
-               $ mkRq rq DELETE (keysPath <> encodeUtf8 k) Nothing)
+        = http env ( ignoreStatus
+                   . HTTP.setQueryString (toQuery ps)
+                   $ mkRq rq DELETE (keysPath <> encodeUtf8 k) Nothing)
       >>= throwInvalidResponse . keyspaceResponse
+      >>= debugRs
       >>= next
     go (WatchKey k ps next) rq
-        = http ( ignoreStatus
-               . HTTP.setQueryString (toQuery ps)
-               $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
+        = http env ( ignoreStatus
+                   . HTTP.setQueryString (toQuery ps)
+                   $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
       >>= \case rs | emptyResponse rs -> go (WatchKey k ps next) rq
                    | otherwise        -> throwInvalidResponse (keyspaceResponse rs)
+                                     >>= debugRs
                                      >>= next
 
     go (ListMembers next) rq
-        = http (mkRq rq GET membersPath Nothing)
+        = http env (mkRq rq GET membersPath Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
     go (AddMember us next) rq
-        = http (mkRq rq POST membersPath (Just (encode us)))
+        = http env (mkRq rq POST membersPath (Just (encode us)))
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
     go (DeleteMember m next) rq
-        = empty (mkRq rq DELETE (membersPath <> encodeUtf8 m) Nothing)
+        = empty env (mkRq rq DELETE (membersPath <> encodeUtf8 m) Nothing)
        >> next
     go (UpdateMember m us next) rq
-        = empty (mkRq rq PUT (membersPath <> encodeUtf8 m) (Just (encode us)))
+        = empty env (mkRq rq PUT (membersPath <> encodeUtf8 m) (Just (encode us)))
        >> next
 
     go (GetLeaderStats next) rq
-        = http (mkRq rq GET (statsPath <> "leader") Nothing)
+        = http env (mkRq rq GET (statsPath <> "leader") Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
     go (GetSelfStats   next) rq
-        = http (mkRq rq GET (statsPath <> "self") Nothing)
+        = http env (mkRq rq GET (statsPath <> "self") Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
     go (GetStoreStats  next) rq
-        = http (mkRq rq GET (statsPath <> "store") Nothing)
+        = http env (mkRq rq GET (statsPath <> "store") Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
 
     go (GetVersion next) rq
-        = http (mkRq rq GET versionPath Nothing)
+        = http env (mkRq rq GET versionPath Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
     go (GetHealth  next) rq
-        = http (mkRq rq GET healthPath Nothing)
+        = http env (mkRq rq GET healthPath Nothing)
       >>= throwInvalidResponse . jsonResponse
+      >>= debugRs
       >>= next
 
     emptyResponse r
@@ -230,17 +246,23 @@ eval f = view baseRequest >>= go f
 
     ignoreStatus rq = rq { checkStatus = \_ _ _ -> Nothing }
 
+    debugRs :: (Show a, MonadIO m) => a -> m a
+    debugRs a = do
+        Log.debug (view logger env) $ Log.field "response" (show a)
+        return a
 
-empty :: (MonadIO m, MonadReader e m, HasEnv e) => Request -> m ()
-empty rq = view httpManager >>= liftIO . HTTP.httpNoBody rq >> return ()
 
-http :: ( MonadIO       m
-        , MonadReader e m
-        , HasEnv      e
-        )
-     => Request
-     -> m (HTTP.Response Lazy.ByteString)
-http rq = view httpManager >>= liftIO . HTTP.httpLbs rq
+empty :: MonadIO m => Env -> Request -> m ()
+empty env rq = liftIO $ HTTP.httpNoBody rq (view httpManager env) >> return ()
+
+http :: MonadIO m => Env -> Request -> m (HTTP.Response Lazy.ByteString)
+http env rq = do
+    let lgr = view logger       env
+        mgr = view httpManager  env
+    Log.trace lgr (Log.msg (show rq))
+    rs  <- liftIO $ HTTP.httpLbs rq mgr
+    Log.trace lgr (Log.msg (show rs))
+    return rs
 
 mkRq :: Request -> StdMethod -> Strict.ByteString -> Maybe Lazy.ByteString -> Request
 mkRq base m p b = base
@@ -289,3 +311,42 @@ keyspaceResponse rs = do
 
 jsonResponse :: FromJSON a => HTTP.Response Lazy.ByteString -> Either String a
 jsonResponse = eitherDecode . HTTP.responseBody
+
+
+debugRq :: MonadIO m => Env -> EtcdF a -> m ()
+debugRq env f = do
+    let lgr = view logger env
+    Log.debug lgr $ case f of
+        GetKey    k ps _ -> cmd "GetKey"    . key' k . params ps
+        PutKey    k ps _ -> cmd "PutKey"    . key' k . params ps
+        PostKey   k ps _ -> cmd "PostKey"   . key' k . params ps
+        DeleteKey k ps _ -> cmd "DeleteKey" . key' k . params ps
+        WatchKey  k ps _ -> cmd "WatchKey"  . key' k . params ps
+
+        ListMembers       _ -> cmd "ListMembers"
+        AddMember   us    _ -> cmd "AddMember"    . purls us
+        DeleteMember m    _ -> cmd "DeleteMember" . membr m
+        UpdateMember m us _ -> cmd "UpdateMember" . membr m . purls us
+
+        GetLeaderStats _ -> cmd "GetLeaderStats"
+        GetSelfStats   _ -> cmd "GetSelfStats"
+        GetStoreStats  _ -> cmd "GetStoreStats"
+        GetVersion     _ -> cmd "GetVersion"
+        GetHealth      _ -> cmd "GetHealth"
+  where
+    cmd :: Strict.ByteString -> (Log.Msg -> Log.Msg)
+    cmd = Log.field "command"
+
+    key' = Log.field "key"
+
+    params :: Show a => a -> (Log.Msg -> Log.Msg)
+    params = Log.field "params" . show
+
+    purls
+        = Log.field "peerURLs"
+        . toLazyByteString
+        . mconcat . intersperse (charUtf8 ',')
+        . map (builder . fromURL)
+        . peerURLs
+
+    membr = Log.field "member"

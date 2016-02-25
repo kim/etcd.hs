@@ -32,13 +32,11 @@ library
     , exceptions
     , free                  >= 4.12
     , http-types
-    , monad-control
     , mtl
     , profunctors
     , text
     , time
     , transformers
-    , transformers-base
     , unordered-containers
 
   ghc-options:
