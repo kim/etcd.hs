@@ -30,6 +30,7 @@ module Database.Etcd
     )
 where
 
+import           Control.Concurrent           (myThreadId)
 import           Control.Lens                 (Lens', lens, view)
 import           Control.Monad.Catch
 import           Control.Monad.Free.Class
@@ -248,7 +249,9 @@ runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
 
     debugRs :: (Show a, MonadIO m) => a -> m a
     debugRs a = do
-        Log.debug (view logger env) $ Log.field "response" (show a)
+        tid <- liftIO myThreadId
+        Log.debug (view logger env) $
+            Log.field "thread" (show tid) . Log.field "response" (show a)
         return a
 
 
@@ -316,7 +319,8 @@ jsonResponse = eitherDecode . HTTP.responseBody
 debugRq :: MonadIO m => Env -> EtcdF a -> m ()
 debugRq env f = do
     let lgr = view logger env
-    Log.debug lgr $ case f of
+    tid <- liftIO myThreadId
+    Log.debug lgr $ Log.field "thread" (show tid) . case f of
         GetKey    k ps _ -> cmd "GetKey"    . key' k . params ps
         PutKey    k ps _ -> cmd "PutKey"    . key' k . params ps
         PostKey   k ps _ -> cmd "PostKey"   . key' k . params ps
