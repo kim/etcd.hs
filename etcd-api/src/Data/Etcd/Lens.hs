@@ -58,12 +58,10 @@ module Data.Etcd.Lens
     )
 where
 
-import Control.Applicative (Const)
 import Data.Etcd.Types
-import Data.Monoid         (First)
-import Data.Profunctor     (Choice, dimap, right')
-import Data.Text           (Text)
-import Data.Word           (Word16, Word64)
+import Data.Profunctor (Choice, dimap, right')
+import Data.Text       (Text)
+import Data.Word       (Word16, Word64)
 
 
 gRecursive :: Lens' GetOptions Bool
@@ -136,52 +134,52 @@ _Error = prism Error $ \case
     x       -> Left  x
 
 
-_KeyNotFound :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_KeyNotFound :: Prism' ResponseBody ErrorResponse
 _KeyNotFound = _Error . hasCode 100
 
-_TestFailed :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_TestFailed :: Prism' ResponseBody ErrorResponse
 _TestFailed = _Error . hasCode 101
 
-_NotFile :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NotFile :: Prism' ResponseBody ErrorResponse
 _NotFile = _Error . hasCode 102
 
-_NotDir :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NotDir :: Prism' ResponseBody ErrorResponse
 _NotDir = _Error . hasCode 104
 
-_NodeExist :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_NodeExist :: Prism' ResponseBody ErrorResponse
 _NodeExist = _Error . hasCode 105
 
-_RootOnly :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_RootOnly :: Prism' ResponseBody ErrorResponse
 _RootOnly = _Error . hasCode 107
 
-_DirNotEmpty :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_DirNotEmpty :: Prism' ResponseBody ErrorResponse
 _DirNotEmpty = _Error . hasCode 108
 
-_Unauthorized :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_Unauthorized :: Prism' ResponseBody ErrorResponse
 _Unauthorized = _Error . hasCode 110
 
-_PrevValueRequired :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_PrevValueRequired :: Prism' ResponseBody ErrorResponse
 _PrevValueRequired = _Error . hasCode 201
 
-_TTLNaN :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_TTLNaN :: Prism' ResponseBody ErrorResponse
 _TTLNaN = _Error . hasCode 202
 
-_IndexNaN :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_IndexNaN :: Prism' ResponseBody ErrorResponse
 _IndexNaN = _Error . hasCode 203
 
-_InvalidField :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_InvalidField :: Prism' ResponseBody ErrorResponse
 _InvalidField = _Error . hasCode 209
 
-_RaftInternal :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_RaftInternal :: Prism' ResponseBody ErrorResponse
 _RaftInternal = _Error . hasCode 300
 
-_LeaderElect :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_LeaderElect :: Prism' ResponseBody ErrorResponse
 _LeaderElect = _Error . hasCode 301
 
-_WatcherCleared :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_WatcherCleared :: Prism' ResponseBody ErrorResponse
 _WatcherCleared = _Error . hasCode 400
 
-_EventIndexCleared :: Getting (First ErrorResponse) ResponseBody ErrorResponse
+_EventIndexCleared :: Prism' ResponseBody ErrorResponse
 _EventIndexCleared = _Error . hasCode 401
 
 hasCode
@@ -219,6 +217,3 @@ type Optic' p f s a = Optic p f s s a a
 filtered :: (Choice p, Applicative f) => (a -> Bool) -> Optic' p f a a
 filtered p = dimap (\x -> if p x then Right x else Left x) (either pure id) . right'
 {-# INLINE filtered #-}
-
-
-type Getting r s a = (a -> Const r a) -> s -> Const r s
