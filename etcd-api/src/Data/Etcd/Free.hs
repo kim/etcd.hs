@@ -15,9 +15,6 @@ module Data.Etcd.Free
     , deleteKey
     , watchKey
 
-    , EphemeralNode (fromEphemeralNode)
-    , ephemeralNode
-
     , listMembers
     , addMember
     , deleteMember
@@ -36,7 +33,6 @@ where
 
 import Control.Monad.Free.Class
 import Data.Etcd.Types
-import Data.Text                (Text)
 
 
 data EtcdF a
@@ -78,25 +74,6 @@ deleteKey k o = liftF $ DeleteKey k o id
 
 watchKey :: MonadFree EtcdF m => Key -> WatchOptions -> m Response
 watchKey k o = liftF $ WatchKey k o id
-
-
-newtype EphemeralNode = EphemeralNode { fromEphemeralNode :: Node }
-
-ephemeralNode
-    :: MonadFree EtcdF m
-    => Key
-    -> Maybe Text
-    -> TTL
-    -> m (Either ErrorResponse EphemeralNode)
-ephemeralNode k v t = do
-    parent <- putKey k (putOptions { _pDir = True })
-    case responseBody parent of
-        Error e | errorCode e /= 102 -> return $ Left e
-        _ -> do
-            eph <- postKey k (postOptions { _cValue = v, _cTTL = Just t })
-            return $ case responseBody eph of
-                Error   e -> Left e
-                Success s -> Right (EphemeralNode (node s))
 
 
 listMembers :: MonadFree EtcdF m => m Members
