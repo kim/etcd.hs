@@ -15,19 +15,14 @@ import Data.Text.Lazy             (toStrict)
 import Data.Text.Lazy.Builder     (fromText, singleton, toLazyText)
 import Data.Text.Lazy.Builder.Int (decimal)
 import Data.Word                  (Word16)
-import Database.Etcd.Util
 
 
 enqueue :: MonadFree EtcdF m => Key -> Maybe Text -> Word16 -> m (Either ErrorResponse Node)
 enqueue k v p = do
-    parent <- newDirectory kp
-    case parent of
-        Left e -> return $ Left e
-        _ -> do
-            n <- postKey kp postOptions { _cValue = v }
-            return $ case responseBody n of
-                Error   e -> Left  e
-                Success s -> Right (node s)
+    n <- postKey kp postOptions { _cValue = v }
+    return $ case responseBody n of
+        Error   e -> Left  e
+        Success s -> Right (node s)
   where
     kp = toStrict . toLazyText $ fromText k <> singleton '/' <> decimal p
 
