@@ -9,7 +9,6 @@ module Database.Etcd.Util
     ( EphemeralNode (ephNode, ephHeartbeat)
     , Heartbeat
 
-    , newDirectory
     , newUniqueEphemeralNode
 
     , successOrThrow
@@ -43,13 +42,6 @@ data EphemeralNodeError = EphemeralNodeError ErrorResponse
 instance Exception EphemeralNodeError
 
 
-newDirectory :: MonadFree EtcdF m => Key -> m (Either ErrorResponse ())
-newDirectory k = do
-    d <- putKey k (putOptions { _pDir = True })
-    return $ case responseBody d of
-        Error e | errorCode e /= 102 -> Left e
-        _ -> Right ()
-
 newUniqueEphemeralNode
     :: ( MonadIO         m
        , MonadThrow      m
@@ -60,14 +52,10 @@ newUniqueEphemeralNode
     -> TTL
     -> m (Either ErrorResponse (EphemeralNode m))
 newUniqueEphemeralNode k v t = do
-    parent <- newDirectory k
-    case parent of
-        Left e -> return $ Left e
-        _ -> do
-            eph <- postKey k (postOptions { _cValue = v, _cTTL = Just t })
-            return $ case responseBody eph of
-                Error   e -> Left e
-                Success s -> Right (EphemeralNode (node s) (heartbeat (node s)))
+    eph <- postKey k (postOptions { _cValue = v, _cTTL = Just t })
+    return $ case responseBody eph of
+        Error   e -> Left e
+        Success s -> Right (EphemeralNode (node s) (heartbeat (node s)))
 
 heartbeat
     :: ( MonadIO          m
