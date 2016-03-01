@@ -15,9 +15,10 @@
 
 module Database.Etcd
     ( Env
-    , HasEnv    (..)
+    , HasEnv      (..)
     , Client
-    , EtcdError (..)
+    , EtcdError   (..)
+    , MonadClient (..)
 
     , mkEnv
     , mkEnv'
@@ -109,7 +110,7 @@ newtype Client a = Client { client :: ReaderT Env (EtcdT IO) a }
              )
 
 instance MonadLogger Client where
-    log l m = view logger >>= \lgr ->  Log.log lgr l m
+    log l m = view logger >>= \lgr -> Log.log lgr l m
 
 
 class ( Functor         m
