@@ -26,6 +26,7 @@ library
     Database.Etcd.Election
     Database.Etcd.PriorityQueue
     Database.Etcd.Queue
+    Database.Etcd.Util
 
   build-depends:
       async
