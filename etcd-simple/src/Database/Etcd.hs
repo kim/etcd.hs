@@ -57,8 +57,8 @@ import qualified Data.ByteString.Lazy         as Lazy
 import           Data.List                    (intersperse)
 import           Data.Maybe
 import           Data.Monoid
+import           Data.Text                    (pack)
 import           Data.Text.Encoding
-import           Data.Typeable
 import           Network.HTTP.Client          (Request (..))
 import qualified Network.HTTP.Client          as HTTP
 import           Network.HTTP.Types
@@ -93,10 +93,6 @@ class HasEnv a where
 instance HasEnv Env where
     environment = id
 
-data EtcdError = InvalidResponse String
-    deriving (Eq, Show, Typeable)
-
-instance Exception EtcdError
 
 newtype Client a = Client { client :: ReaderT Env (EtcdT IO) a }
     deriving ( Functor
@@ -291,7 +287,7 @@ healthPath :: Strict.ByteString
 healthPath = "/health"
 
 throwInvalidResponse :: MonadThrow m => Either String b -> m b
-throwInvalidResponse (Left  e) = throwM $ InvalidResponse e
+throwInvalidResponse (Left  e) = throwM $ ClientError (pack e)
 throwInvalidResponse (Right r) = pure r
 
 keyspaceResponse :: HTTP.Response Lazy.ByteString -> Either String Response

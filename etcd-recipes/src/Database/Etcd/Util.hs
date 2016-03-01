@@ -21,6 +21,7 @@ module Database.Etcd.Util
 where
 
 import Control.Concurrent       (threadDelay)
+import Control.Monad            (void)
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Free
@@ -45,9 +46,9 @@ instance Exception EphemeralNodeError
 newDirectory :: MonadFree EtcdF m => Key -> m (Either ErrorResponse ())
 newDirectory k = do
     d <- putKey k (putOptions { _pDir = True })
-    case responseBody d of
-        Error e | errorCode e /= 102 -> return $ Left e
-        _ -> return $ Right ()
+    return $ case responseBody d of
+        Error e | errorCode e /= 102 -> Left e
+        _ -> Right ()
 
 newUniqueEphemeralNode
     :: ( MonadIO         m
@@ -83,7 +84,7 @@ heartbeat = loop
                                 , _pRefresh   = True
                                 , _pPrevIndex = Just (modifiedIndex n)
                                 }
-          >>= successOrThrow EphemeralNodeError
+          >>= successOrThrow
         liftIO $ threadDelay (fromIntegral (ttlOf n) * 1000000)
         loop (node rs)
 
@@ -91,27 +92,13 @@ heartbeat = loop
     ttlOf = fromMaybe 1 . ttl
 
 
-successOrThrow
-    :: ( Exception  e
-       , MonadThrow m
-       )
-    => (ErrorResponse -> e)
-    -> Response
-    -> m SuccessResponse
-successOrThrow f r = case responseBody r of
-    Error   e -> throwM $ f e
+successOrThrow :: MonadThrow m => Response -> m SuccessResponse
+successOrThrow r = case responseBody r of
+    Error   e -> throwM $ EtcdError e
     Success s -> pure s
 
-successOrThrow_
-    :: ( Exception  e
-       , MonadThrow m
-       )
-    => (ErrorResponse -> e)
-    -> Response
-    -> m ()
-successOrThrow_ f r = case responseBody r of
-    Error e -> throwM $ f e
-    _       -> pure ()
+successOrThrow_ :: MonadThrow m => Response -> m ()
+successOrThrow_ = void . successOrThrow
 
 
 newtype Max a = Max { getMax :: Maybe a }

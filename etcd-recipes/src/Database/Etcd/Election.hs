@@ -8,8 +8,7 @@
 {-# LANGUAGE Rank2Types            #-}
 
 module Database.Etcd.Election
-    ( ElectionError (..)
-    , Nomination
+    ( Nomination
     , Promotion
     , Promoted
 
@@ -32,13 +31,6 @@ import Data.Text                (Text)
 import Data.Void
 import Database.Etcd.Util
 
-
-data ElectionError
-    = ElectionError ErrorResponse
-    | Impossible    Text
-    deriving (Eq, Show)
-
-instance Exception ElectionError
 
 data Nomination m = Nomination Key (EphemeralNode m)
 data Promoted     = Promoted
@@ -78,7 +70,7 @@ nominate
 nominate k v t = do
     eph <- newUniqueEphemeralNode k v t
     case eph of
-        Left  e -> throwM $ ElectionError e
+        Left  e -> throwM $ EtcdError e
         Right n -> return $ Nomination k n
 
 awaitPromotion
@@ -94,19 +86,19 @@ awaitPromotion (Nomination d eph) = return $ Promotion eph loop
 
     loop = do
         rs <- getKey d getOptions { _gSorted = True, _gQuorum = True }
-        ls <- nodes . node <$> successOrThrow ElectionError rs
+        ls <- nodes . node <$> successOrThrow rs
         case span ((< myKey) . key) ls of
-            ([],[]) -> throwM $ Impossible (d <> " does not contain any keys")
+            ([],[]) -> throwM $ ClientError (d <> " does not contain any keys")
 
             ([],(x:_))
               | key x == myKey -> return Promoted
-              | otherwise      -> throwM $ Impossible (key x <> " /= " <> myKey)
+              | otherwise      -> throwM $ ClientError (key x <> " /= " <> myKey)
 
             (xs,_) -> watchPred (key (last xs)) (modifiedIndex . ephNode $ eph)
 
     watchPred p idx = do
         rs <- watchKey p watchOptions { _wRecursive = False, _wWaitIndex = Just idx }
-          >>= successOrThrow ElectionError
+          >>= successOrThrow
         case action rs of
             ActionExpire -> loop
             ActionDelete -> loop

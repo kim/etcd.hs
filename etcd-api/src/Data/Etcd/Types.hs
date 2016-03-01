@@ -8,6 +8,7 @@
 module Data.Etcd.Types where
 
 import Control.Applicative
+import Control.Exception            (Exception)
 import Data.Aeson.Types             hiding (Error, Success, Value)
 import Data.ByteString.Conversion   (toByteString')
 import Data.Etcd.Internal
@@ -20,6 +21,13 @@ import GHC.Generics
 import Network.HTTP.Types.QueryLike
 import Network.HTTP.Types.URI       (simpleQueryToQuery)
 
+
+data EtcdError
+    = EtcdError   ErrorResponse
+    | ClientError Text
+    deriving (Eq, Show)
+
+instance Exception EtcdError
 
 --------------------------------------------------------------------------------
 -- Keyspace

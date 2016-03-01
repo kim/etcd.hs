@@ -8,8 +8,7 @@
 {-# LANGUAGE Rank2Types            #-}
 
 module Database.Etcd.DoubleBarrier
-    ( DoubleBarrierError (..)
-    , Entered
+    ( Entered
     , MayLeave
 
     , enter
@@ -33,11 +32,6 @@ import Data.Void                (absurd)
 import Data.Word                (Word16)
 import Database.Etcd.Util
 
-
-data DoubleBarrierError = DoubleBarrierError ErrorResponse
-    deriving (Eq, Show)
-
-instance Exception DoubleBarrierError
 
 data Entered  m = Entered  (EphemeralNode m) (m MayLeave)
 data MayLeave   = MayLeave Key Key
@@ -83,15 +77,15 @@ enter
 enter k v cnt t = do
     eph <- newUniqueEphemeralNode (k <> "/waiters") v t
     case eph of
-        Left  e -> throwM $ DoubleBarrierError e
+        Left  e -> throwM $ EtcdError e
         Right n -> return $ Entered n (waitReady n)
   where
     waitReady eph = do
         ls <- getKey (k <> "/waiters") getOptions { _gQuorum = True }
-          >>= fmap (nodes . node) . successOrThrow DoubleBarrierError
+          >>= fmap (nodes . node) . successOrThrow
 
         if fromIntegral (length ls) >= cnt then
-            putKey (k <> "/ready") putOptions >>= successOrThrow_ DoubleBarrierError
+            putKey (k <> "/ready") putOptions >>= successOrThrow_
         else
             watchReady (modifiedIndex . ephNode $ eph)
 
@@ -99,7 +93,7 @@ enter k v cnt t = do
 
     watchReady idx = do
         rs <- watchKey (k <> "/ready") watchOptions { _wWaitIndex = Just idx }
-          >>= successOrThrow DoubleBarrierError
+          >>= successOrThrow
         case action rs of
             ActionSet -> return ()
             _         -> watchReady (modifiedIndex . node $ rs)
@@ -108,7 +102,7 @@ enter k v cnt t = do
 leave :: (MonadThrow m, MonadFree EtcdF m) => MayLeave -> m ()
 leave (MayLeave k me) = do
     ls <- getKey (k <> "/waiters") getOptions { _gQuorum = True }
-      >>= fmap (nodes . node) . successOrThrow DoubleBarrierError
+      >>= fmap (nodes . node) . successOrThrow
 
     case ls of
         []  -> return ()
@@ -120,7 +114,7 @@ leave (MayLeave k me) = do
             if key lowest == me then
                 watchDisappear highest >> leave (MayLeave k me)
             else do
-                deleteKey me deleteOptions >>= successOrThrow_ DoubleBarrierError
+                deleteKey me deleteOptions >>= successOrThrow_
                 watchDisappear lowest
                 leave (MayLeave k me)
   where
@@ -129,7 +123,7 @@ leave (MayLeave k me) = do
 
     watchDisappear n = do
         rs <- watchKey (key n) watchOptions { _wWaitIndex = Just (modifiedIndex n + 1) } -- why n+1 here?
-          >>= successOrThrow DoubleBarrierError
+          >>= successOrThrow
         case action rs of
             ActionDelete -> return ()
             ActionExpire -> return ()
