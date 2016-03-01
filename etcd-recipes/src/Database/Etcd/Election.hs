@@ -47,18 +47,21 @@ data Promotion  m = Promotion (EphemeralNode m) (m Promoted)
 
 asLeader
     :: (forall b. EtcdF (IO b) -> IO b)
-    -> Key -> Maybe Text -> TTL -> IO a
+    -> Key
+    -> Maybe Text
+    -> TTL
+    -> FreeT EtcdF IO a
     -> IO a
 asLeader evalEtcd k v t f =
     iterT evalEtcd (nominate k v t >>= awaitPromotion) >>= onLeader evalEtcd f
 
 onLeader
     :: (forall b. EtcdF (IO b) -> IO b)
-    -> IO a
+    -> FreeT EtcdF IO a
     -> Promotion (FreeT EtcdF IO)
     -> IO a
 onLeader evalEtcd f (Promotion eph w)
-    = race (runEtcd (ephHeartbeat eph)) (runEtcd w *> f)
+    = race (runEtcd (ephHeartbeat eph)) (runEtcd $ w *> f)
   >>= return . either absurd id
   where
     runEtcd = iterT evalEtcd

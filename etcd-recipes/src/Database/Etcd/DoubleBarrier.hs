@@ -45,7 +45,11 @@ data MayLeave   = MayLeave Key Key
 
 withDoubleBarrier
     :: (forall b. EtcdF (IO b) -> IO b)
-    -> Key -> Maybe Text -> Word16 -> TTL -> IO a
+    -> Key
+    -> Maybe Text
+    -> Word16
+    -> TTL
+    -> FreeT EtcdF IO a
     -> IO a
 withDoubleBarrier evalEtcd k v c t f
     = runEtcd (enter k v c t)
@@ -56,12 +60,12 @@ withDoubleBarrier evalEtcd k v c t f
 
 onEntered
     :: (forall b. EtcdF (IO b) -> IO b)
-    -> IO a
+    -> FreeT EtcdF IO a
     -> Entered (FreeT EtcdF IO)
     -> IO (MayLeave, a)
 onEntered evalEtcd f (Entered eph waitReady)
     = race (runEtcd (ephHeartbeat eph))
-           (runEtcd waitReady >>= \ml -> (,) ml <$> f)
+           (runEtcd $ waitReady >>= \ml -> (,) ml <$> f)
   >>= return . either absurd id
   where
     runEtcd = iterT evalEtcd
