@@ -108,7 +108,7 @@ leave (MayLeave k me) = do
         []  -> return ()
         [x] | key x == me -> deleteKey (key x) deleteOptions
                           >> return ()
-            | otherwise   -> error "impossible"
+            | otherwise   -> throwM $ ClientError (key x <> " /= " <> me)
         xs  -> do
             let (Just lowest, Just highest) = minmax xs
             if key lowest == me then
