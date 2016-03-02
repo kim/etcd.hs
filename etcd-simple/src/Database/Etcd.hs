@@ -193,6 +193,17 @@ runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
                    | otherwise        -> throwInvalidResponse (keyspaceResponse rs)
                                      >>= debugRs
                                      >>= next
+    go (KeyExists k next) rq
+        = empty env ( ignoreStatus
+                    $ mkRq rq HEAD (keysPath <> encodeUtf8 k) Nothing)
+      >>= debugRs
+      >>= \rs -> case statusCode (HTTP.responseStatus rs) of
+                     200 -> next True
+                     404 -> next False
+                     _   -> throwM $ HTTP.StatusCodeException (HTTP.responseStatus    rs)
+                                                              (HTTP.responseHeaders   rs)
+                                                              (HTTP.responseCookieJar rs)
+
 
     go (ListMembers next) rq
         = http env (mkRq rq GET membersPath Nothing)
@@ -252,8 +263,8 @@ runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
         return a
 
 
-empty :: MonadIO m => Env -> Request -> m ()
-empty env rq = liftIO $ HTTP.httpNoBody rq (view httpManager env) >> return ()
+empty :: MonadIO m => Env -> Request -> m (HTTP.Response ())
+empty env rq = liftIO $ HTTP.httpNoBody rq (view httpManager env)
 
 http :: MonadIO m => Env -> Request -> m (HTTP.Response Lazy.ByteString)
 http env rq = do
@@ -323,6 +334,7 @@ debugRq env f = do
         PostKey   k ps _ -> cmd "PostKey"   . key' k . params ps
         DeleteKey k ps _ -> cmd "DeleteKey" . key' k . params ps
         WatchKey  k ps _ -> cmd "WatchKey"  . key' k . params ps
+        KeyExists k    _ -> cmd "KeyExists" . key' k
 
         ListMembers       _ -> cmd "ListMembers"
         AddMember   us    _ -> cmd "AddMember"    . purls us

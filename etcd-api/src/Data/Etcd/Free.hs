@@ -14,6 +14,7 @@ module Data.Etcd.Free
     , postKey
     , deleteKey
     , watchKey
+    , keyExists
 
     , listMembers
     , addMember
@@ -42,6 +43,7 @@ data EtcdF a
     | PostKey   Key PostOptions   (Response -> a)
     | DeleteKey Key DeleteOptions (Response -> a)
     | WatchKey  Key WatchOptions  (Response -> a)
+    | KeyExists Key               (Bool     -> a)
 
     -- members
     | ListMembers                    (Members -> a)
@@ -74,6 +76,9 @@ deleteKey k o = liftF $ DeleteKey k o id
 
 watchKey :: MonadFree EtcdF m => Key -> WatchOptions -> m Response
 watchKey k o = liftF $ WatchKey k o id
+
+keyExists :: MonadFree EtcdF m => Key -> m Bool
+keyExists k = liftF $ KeyExists k id
 
 
 listMembers :: MonadFree EtcdF m => m Members
