@@ -7,23 +7,24 @@
 
 module Data.Etcd.Types where
 
-import Control.Applicative
-import Control.Exception            (Exception)
-import Data.Aeson.Types             hiding (Error, Success, Value)
-import Data.ByteString.Conversion   (toByteString')
-import Data.Etcd.Internal
-import Data.HashMap.Strict          (HashMap)
-import Data.Maybe                   (catMaybes)
-import Data.Text                    (Text)
-import Data.Time
-import Data.Word                    (Word16, Word64)
-import GHC.Generics
-import Network.HTTP.Types.QueryLike
-import Network.HTTP.Types.URI       (simpleQueryToQuery)
+import           Control.Applicative
+import           Control.Monad.Catch
+import qualified Data.Aeson                   as Aeson
+import           Data.Aeson.Types             hiding (Value)
+import           Data.ByteString.Conversion   (toByteString')
+import           Data.Etcd.Internal
+import           Data.HashMap.Strict          (HashMap)
+import           Data.Maybe                   (catMaybes)
+import           Data.Text                    (Text)
+import           Data.Time
+import           Data.Word                    (Word16, Word64)
+import           GHC.Generics
+import           Network.HTTP.Types.QueryLike
+import           Network.HTTP.Types.URI       (simpleQueryToQuery)
 
 
 data EtcdError
-    = EtcdError   ErrorResponse
+    = EtcdError   (Rs ErrorResponse)
     | ClientError Text
     deriving (Eq, Show)
 
@@ -47,15 +48,15 @@ instance QueryValueLike SetTTL where
 
 
 data Node = Node
-    { key           :: !Text
-    , dir           :: Bool
-    , value         :: Maybe Text
-    , nodes         :: [Node]
-    , createdIndex  :: !Word64
-    , modifiedIndex :: !Word64
-    , expiration    :: Maybe UTCTime
-    , ttl           :: Maybe TTL
-    } deriving (Eq, Show, Generic)
+    { _nodeKey           :: !Text
+    , _nodeDir           :: !Bool
+    , _nodeValue         :: Maybe Text
+    , _nodeNodes         :: [Node]
+    , _nodeCreatedIndex  :: !Word64
+    , _nodeModifiedIndex :: !Word64
+    , _nodeExpiration    :: Maybe UTCTime
+    , _nodeTTL           :: Maybe TTL
+    } deriving (Eq, Show)
 
 instance FromJSON Node where
     parseJSON = withObject "Node" $ \o ->
@@ -69,21 +70,28 @@ instance FromJSON Node where
              <*> o .:? "ttl"
 
 
-data Response = Response
-    { etcdClusterId :: !Text
-    , etcdIndex     :: !Word64
-    , raftIndex     :: Maybe Word64
-    , raftTerm      :: Maybe Word64
-    , responseBody  :: !ResponseBody
+type Response = Either (Rs ErrorResponse) (Rs SuccessResponse)
+
+data ResponseMeta = ResponseMeta
+    { _etcdClusterId :: !Text
+    , _etcdIndex     :: !Word64
+    , _raftIndex     :: !(Maybe Word64)
+    , _raftTerm      :: !(Maybe Word64)
     } deriving (Eq, Show)
 
-data ResponseBody
-    = Success !SuccessResponse
-    | Error   !ErrorResponse
-    deriving (Eq, Show)
+data Rs a = Rs
+    { _rsMeta :: !ResponseMeta
+    , _rsBody :: !a
+    } deriving (Eq, Show)
 
-instance FromJSON ResponseBody where
-    parseJSON v = (Success <$> parseJSON v) <|> (Error <$> parseJSON v)
+instance Functor Rs where
+    fmap f (Rs m b) = Rs m (f b)
+
+rsFromJSON :: Aeson.Value -> Parser (Either ErrorResponse SuccessResponse)
+rsFromJSON v = (Right <$> parseJSON v) <|> (Left <$> parseJSON v)
+
+hoistError :: MonadThrow m => Response -> m (Rs SuccessResponse)
+hoistError = either (throwM . EtcdError) return
 
 -- | As defined in ${ETCD}/store/event.go
 data Action
@@ -104,18 +112,18 @@ instance FromJSON Action where
         }
 
 data SuccessResponse = SuccessResponse
-    { action   :: !Action
-    , node     :: !Node
-    , prevNode :: Maybe Node
+    { _rsAction   :: !Action
+    , _rsNode     :: !Node
+    , _rsPrevNode :: Maybe Node
     } deriving (Eq, Show, Generic)
 
 instance FromJSON SuccessResponse
 
 data ErrorResponse = ErrorResponse
-    { errorCode :: !Word16
-    , message   :: !Text
-    , cause     :: !Text
-    , index     :: !Word64
+    { _rsErrorCode :: !Word16
+    , _rsMessage   :: !Text
+    , _rsCause     :: !Text
+    , _rsIndex     :: !Word64
     } deriving (Eq, Show, Generic)
 
 instance FromJSON ErrorResponse

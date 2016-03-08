@@ -1,6 +1,6 @@
-name:                etcd-api
+name:                etcdpp
 version:             0.1.0.0
-synopsis:            Types modelling etcd's API
+synopsis:            Formulation of the etcd API as a free monad
 homepage:            https://github.com/kim/etcdpp
 bug-reports:         https://github.com/kim/etcdpp/issues
 license:             MPL-2.0
@@ -17,9 +17,17 @@ source-repository head
 
 library
   exposed-modules:
+    Control.Monad.Etcd.Class
     Control.Monad.Trans.Etcd
     Data.Etcd.Free
     Data.Etcd.Lens
+    Data.Etcd.Recipes.Barrier
+    Data.Etcd.Recipes.DoubleBarrier
+    Data.Etcd.Recipes.Election
+    Data.Etcd.Recipes.PriorityQueue
+    Data.Etcd.Recipes.Queue
+    Data.Etcd.Recipes.Internal
+    Data.Etcd.Recipes.Ephemeral
     Data.Etcd.Types
 
   other-modules:
@@ -27,11 +35,14 @@ library
 
   build-depends:
       aeson                 (>= 0.8 && < 0.10) || > 0.10
+    , lifted-async
     , base                  >= 4.8 && < 5
     , bytestring-conversion
     , exceptions
     , free                  >= 4.12
     , http-types
+    , lens
+    , monad-control
     , mtl
     , profunctors
     , text

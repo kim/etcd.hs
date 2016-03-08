@@ -1,8 +1,7 @@
 resolver: lts-5.1
 packages:
-  - etcd-api/
+  - etcdpp/
   - etcd-simple/
-  - etcd-recipes/
 extra-deps: []
 flags: {}
 extra-package-dbs: []

@@ -2,8 +2,6 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE DeriveFunctor              #-}
-{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
@@ -13,7 +11,7 @@
 {-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE ViewPatterns               #-}
 
-module Database.Etcd
+module Database.Etcd.Simple
     ( Env
     , HasEnv      (..)
     , Client
@@ -31,39 +29,33 @@ module Database.Etcd
     )
 where
 
-import           Control.Concurrent           (myThreadId)
-import           Control.Lens                 (Lens', lens, view)
+import           Control.Concurrent          (myThreadId)
+import           Control.Lens                (Lens', lens, view)
+import           Control.Monad.Base
 import           Control.Monad.Catch
-import           Control.Monad.Free.Class
+import           Control.Monad.Etcd.Class
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
-import qualified Control.Monad.RWS.Lazy       as LRW
-import qualified Control.Monad.RWS.Strict     as RW
-import qualified Control.Monad.State.Lazy     as LS
-import qualified Control.Monad.State.Strict   as S
+import           Control.Monad.Trans.Control
 import           Control.Monad.Trans.Etcd
-import           Control.Monad.Trans.Except   (ExceptT)
-import           Control.Monad.Trans.Identity (IdentityT)
-import           Control.Monad.Trans.List     (ListT)
-import           Control.Monad.Trans.Maybe    (MaybeT)
-import qualified Control.Monad.Writer.Lazy    as LW
-import qualified Control.Monad.Writer.Strict  as W
-import           Data.Aeson                   (FromJSON, eitherDecode, encode)
+import           Control.Monad.Trans.Free
+import           Data.Aeson                  (eitherDecode, encode)
+import           Data.Aeson.Types            (FromJSON, parseEither)
 import           Data.Bitraversable
-import qualified Data.ByteString              as Strict
-import           Data.ByteString.Builder      (charUtf8, toLazyByteString)
+import qualified Data.ByteString             as Strict
+import           Data.ByteString.Builder     (charUtf8, toLazyByteString)
 import           Data.ByteString.Conversion
-import qualified Data.ByteString.Lazy         as Lazy
-import           Data.List                    (intersperse)
+import qualified Data.ByteString.Lazy        as Lazy
+import           Data.List                   (intersperse)
 import           Data.Maybe
 import           Data.Monoid
-import           Data.Text                    (pack)
+import           Data.Text                   (pack)
 import           Data.Text.Encoding
-import           Network.HTTP.Client          (Request (..))
-import qualified Network.HTTP.Client          as HTTP
+import           Network.HTTP.Client         (Request (..))
+import qualified Network.HTTP.Client         as HTTP
 import           Network.HTTP.Types
-import qualified System.Logger                as Log
-import           System.Logger.Class          hiding (eval)
+import qualified System.Logger               as Log
+import           System.Logger.Class         hiding (eval)
 
 
 data Env = Env
@@ -94,27 +86,31 @@ instance HasEnv Env where
     environment = id
 
 
-newtype Client a = Client { client :: ReaderT Env (EtcdT IO) a }
+newtype Client a = Client { client :: ReaderT Env IO a }
     deriving ( Functor
              , Applicative
              , Monad
              , MonadIO
+             , MonadBase IO
              , MonadThrow
              , MonadCatch
              , MonadReader Env
-             , MonadFree   EtcdF
              )
+
+instance MonadBaseControl IO Client where
+    type StM Client a = StM (ReaderT Env IO) a
+
+    liftBaseWith f = Client $ liftBaseWith $ \run -> f (run . client)
+    restoreM       = Client . restoreM
 
 instance MonadLogger Client where
     log l m = view logger >>= \lgr -> Log.log lgr l m
 
-
-class ( Functor         m
-      , Applicative     m
-      , Monad           m
-      , MonadIO         m
-      , MonadCatch      m
-      , MonadReader Env m
+class ( Functor      m
+      , Applicative  m
+      , Monad        m
+      , MonadIO      m
+      , MonadCatch   m
       )
       => MonadClient m
   where
@@ -123,22 +119,12 @@ class ( Functor         m
 instance MonadClient Client where
     liftClient = id
 
-instance            MonadClient m  => MonadClient (IdentityT        m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (ListT            m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (MaybeT           m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (ExceptT        e m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (ReaderT      Env m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (S.StateT       s m) where liftClient = lift . liftClient
-instance            MonadClient m  => MonadClient (LS.StateT      s m) where liftClient = lift . liftClient
-instance (Monoid w, MonadClient m) => MonadClient (W.WriterT    w   m) where liftClient = lift . liftClient
-instance (Monoid w, MonadClient m) => MonadClient (LW.WriterT   w   m) where liftClient = lift . liftClient
-instance (Monoid w, MonadClient m) => MonadClient (RW.RWST  Env w s m) where liftClient = lift . liftClient
-instance (Monoid w, MonadClient m) => MonadClient (LRW.RWST Env w s m) where liftClient = lift . liftClient
+instance MonadEtcd Client where
+    liftEtcd m = view environment >>= \e -> iterT (runEtcdIO e) m
 
 
 runClient :: (MonadIO m, HasEnv e) => e -> Client a -> m a
-runClient (view environment -> e) a = liftIO $
-    runEtcdT (runEtcdIO e) (runReaderT (client a) e)
+runClient (view environment -> e) (client -> a) = liftIO $ runReaderT a e
 
 runClient' :: (MonadIO m, MonadCatch m) => String -> Client a -> m a
 runClient' url a = mkEnv' url >>= (`runClient` a)
@@ -153,7 +139,7 @@ mkEnv' url = do
     mkEnv url mgr lgr
 
 
-runEtcdIO :: (MonadIO m, MonadThrow m) => Env -> EtcdF (m a) -> m a
+runEtcdIO :: (MonadIO m, MonadThrow m, HasEnv e) => e -> EtcdF (m a) -> m a
 runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
   where
     go (GetKey k ps next) rq
@@ -263,10 +249,10 @@ runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
         return a
 
 
-empty :: MonadIO m => Env -> Request -> m (HTTP.Response ())
+empty :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response ())
 empty env rq = liftIO $ HTTP.httpNoBody rq (view httpManager env)
 
-http :: MonadIO m => Env -> Request -> m (HTTP.Response Lazy.ByteString)
+http :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response Lazy.ByteString)
 http env rq = do
     let lgr = view logger       env
         mgr = view httpManager  env
@@ -307,14 +293,14 @@ keyspaceResponse rs = do
         bdy  = HTTP.responseBody    rs
     cid <- let h = "x-etcd-cluster-id" in expect h (header h hdrs)
     idx <- let h = "x-etcd-index"      in expect h (header h hdrs)
-    rsb <- eitherDecode bdy
-    pure Response
-        { etcdClusterId = cid
-        , etcdIndex     = idx
-        , raftIndex     = header "x-raft-index" hdrs
-        , raftTerm      = header "x-raft-term"  hdrs
-        , responseBody  = rsb
-        }
+    let meta = ResponseMeta
+                 { _etcdClusterId = cid
+                 , _etcdIndex     = idx
+                 , _raftIndex     = header "x-raft-index" hdrs
+                 , _raftTerm      = header "x-raft-term"  hdrs
+                 }
+    rsb <- parseEither rsFromJSON =<< eitherDecode bdy
+    pure $ either (Left . Rs meta) (Right . Rs meta) rsb
   where
     header h hs  = fromByteString =<< lookup h hs
     expect h     = maybe (Left (unexpected h)) Right
@@ -324,7 +310,7 @@ jsonResponse :: FromJSON a => HTTP.Response Lazy.ByteString -> Either String a
 jsonResponse = eitherDecode . HTTP.responseBody
 
 
-debugRq :: MonadIO m => Env -> EtcdF a -> m ()
+debugRq :: (MonadIO m, HasEnv e) => e -> EtcdF a -> m ()
 debugRq env f = do
     let lgr = view logger env
     tid <- liftIO myThreadId

@@ -7,7 +7,7 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE Rank2Types            #-}
 
-module Database.Etcd.Election
+module Data.Etcd.Recipes.Election
     ( Nomination
     , Promotion
     , Promoted
@@ -20,16 +20,18 @@ module Database.Etcd.Election
     )
 where
 
-import Control.Concurrent.Async
+import Control.Concurrent.Async.Lifted
 import Control.Monad.Catch
+import Control.Monad.Etcd.Class
 import Control.Monad.Free.Class
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Control
 import Control.Monad.Trans.Free
 import Data.Etcd.Free
+import Data.Etcd.Recipes.Ephemeral
 import Data.Monoid
-import Data.Text                (Text)
+import Data.Text                       (Text)
 import Data.Void
-import Database.Etcd.Util
 
 
 data Nomination m = Nomination Key (EphemeralNode m)
@@ -38,25 +40,29 @@ data Promotion  m = Promotion (EphemeralNode m) (m Promoted)
 
 
 asLeader
-    :: (forall b. EtcdF (IO b) -> IO b)
-    -> Key
+    :: ( MonadIO             m
+       , MonadThrow          m
+       , MonadEtcd           m
+       , MonadBaseControl IO m
+       )
+    => Key
     -> Maybe Text
     -> TTL
-    -> FreeT EtcdF IO a
-    -> IO a
-asLeader evalEtcd k v t f =
-    iterT evalEtcd (nominate k v t >>= awaitPromotion) >>= onLeader evalEtcd f
+    -> m a
+    -> m a
+asLeader k v t f =
+    liftEtcd (nominate k v t >>= awaitPromotion) >>= onLeader f
 
 onLeader
-    :: (forall b. EtcdF (IO b) -> IO b)
-    -> FreeT EtcdF IO a
-    -> Promotion (FreeT EtcdF IO)
-    -> IO a
-onLeader evalEtcd f (Promotion eph w)
-    = race (runEtcd (ephHeartbeat eph)) (runEtcd $ w *> f)
+    :: ( MonadEtcd           m
+       , MonadBaseControl IO m
+       )
+    => m a
+    -> Promotion (FreeT EtcdF m)
+    -> m a
+onLeader f (Promotion eph w)
+    = race (liftEtcd (_ephHeartbeat eph)) (liftEtcd w *> f)
   >>= return . either absurd id
-  where
-    runEtcd = iterT evalEtcd
 
 nominate
     :: ( MonadIO         m
@@ -67,11 +73,7 @@ nominate
     -> Maybe Text
     -> TTL
     -> m (Nomination m)
-nominate k v t = do
-    eph <- newUniqueEphemeralNode k v t
-    case eph of
-        Left  e -> throwM $ EtcdError e
-        Right n -> return $ Nomination k n
+nominate k v t = Nomination k <$> newUniqueEphemeralNode k v t
 
 awaitPromotion
     :: ( MonadIO         m
@@ -82,24 +84,25 @@ awaitPromotion
     -> m (Promotion m)
 awaitPromotion (Nomination d eph) = return $ Promotion eph loop
   where
-    myKey = key . ephNode $ eph
+    myKey = _nodeKey . _ephNode $ eph
 
     loop = do
-        rs <- getKey d getOptions { _gSorted = True, _gQuorum = True }
-        ls <- nodes . node <$> successOrThrow rs
-        case span ((< myKey) . key) ls of
+        ls <- getKey d getOptions { _gSorted = True, _gQuorum = True }
+          >>= fmap (_nodeNodes . _rsNode . _rsBody) . hoistError
+
+        case span ((< myKey) . _nodeKey) ls of
             ([],[]) -> throwM $ ClientError (d <> " does not contain any keys")
 
             ([],(x:_))
-              | key x == myKey -> return Promoted
-              | otherwise      -> throwM $ ClientError (key x <> " /= " <> myKey)
+              | _nodeKey x == myKey -> return Promoted
+              | otherwise           -> throwM $ ClientError (_nodeKey x <> " /= " <> myKey)
 
-            (xs,_) -> watchPred (key (last xs)) (modifiedIndex . ephNode $ eph)
+            (xs,_) -> watchPred (_nodeKey (last xs)) (_nodeModifiedIndex . _ephNode $ eph)
 
     watchPred p idx = do
         rs <- watchKey p watchOptions { _wRecursive = False, _wWaitIndex = Just idx }
-          >>= successOrThrow
-        case action rs of
+          >>= fmap _rsBody . hoistError
+        case _rsAction rs of
             ActionExpire -> loop
             ActionDelete -> loop
-            _            -> watchPred p (modifiedIndex . node $ rs)
+            _            -> watchPred p (_nodeModifiedIndex . _rsNode $ rs)
