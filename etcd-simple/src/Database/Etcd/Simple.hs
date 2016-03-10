@@ -140,100 +140,94 @@ mkEnv' url = do
 
 
 runEtcdIO :: (MonadIO m, MonadThrow m, HasEnv e) => e -> EtcdF (m a) -> m a
-runEtcdIO env f = debugRq env f *> go f (view baseRequest env)
+runEtcdIO env f = debugRq env f *> go f
   where
-    go (GetKey k ps next) rq
-        = http env ( ignoreStatus
-                   . HTTP.setQueryString (toQuery ps)
-                   $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
-      >>= throwInvalidResponse . keyspaceResponse
-      >>= debugRs
-      >>= next
-    go (PutKey k ps next) rq
-        = http env ( ignoreStatus
-                   . (\rq' -> rq' { method = "PUT" })
-                   . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-                   $ mkRq rq PUT (keysPath <> encodeUtf8 k) Nothing)
-      >>= throwInvalidResponse . keyspaceResponse
-      >>= debugRs
-      >>= next
-    go (PostKey k ps next) rq
-        = http env ( ignoreStatus
-                   . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-                   $ mkRq rq POST (keysPath <> encodeUtf8 k) Nothing)
-      >>= throwInvalidResponse . keyspaceResponse
-      >>= debugRs
-      >>= next
-    go (DeleteKey k ps next) rq
-        = http env ( ignoreStatus
-                   . HTTP.setQueryString (toQuery ps)
-                   $ mkRq rq DELETE (keysPath <> encodeUtf8 k) Nothing)
-      >>= throwInvalidResponse . keyspaceResponse
-      >>= debugRs
-      >>= next
-    go (WatchKey k ps next) rq
-        = http env ( ignoreStatus
-                   . HTTP.setQueryString (toQuery ps)
-                   $ mkRq rq GET (keysPath <> encodeUtf8 k) Nothing)
-      >>= \case rs | emptyResponse rs -> go (WatchKey k ps next) rq
-                   | otherwise        -> throwInvalidResponse (keyspaceResponse rs)
-                                     >>= debugRs
+    runHttp
+        :: ( MonadIO    m
+           , MonadThrow m
+           , Show a
+           )
+        => HTTP.Request
+        -> (HTTP.Response Lazy.ByteString -> Either String a)
+        -> m a
+    runHttp      rq g = http env rq  >>= throwInvalidResponse . g >>= debugRs
+    runHttpEmpty rq   = empty env rq >>= debugRs
+
+    baseRq = view baseRequest env
+
+    getKeyRq k ps
+        = ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ mkRq baseRq GET (keysPath <> encodeUtf8 k)
+
+    putKeyRq k ps
+        = ignoreStatus
+        . (\rq' -> rq' { method = "PUT" })
+        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+        $ mkRq baseRq PUT (keysPath <> encodeUtf8 k)
+
+    postKeyRq k ps
+        = ignoreStatus
+        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+        $ mkRq baseRq POST (keysPath <> encodeUtf8 k)
+
+    delKeyRq k ps
+        = ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ mkRq baseRq DELETE (keysPath <> encodeUtf8 k)
+
+    watchKeyRq k ps
+        = ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ mkRq baseRq GET (keysPath <> encodeUtf8 k)
+
+    keyExistsRq k
+        = ignoreStatus
+        $ mkRq baseRq HEAD (keysPath <> encodeUtf8 k)
+
+    listMembersRq    = mkRq baseRq GET membersPath
+    addMemberRq   us = rqBdy (encode us) $ mkRq baseRq POST membersPath
+    delMemberRq m    = mkRq baseRq DELETE (membersPath <> encodeUtf8 m)
+    updMemberRq m us = rqBdy (encode us)
+                     $ mkRq baseRq PUT (membersPath <> encodeUtf8 m)
+
+    leaderStatsRq = mkRq baseRq GET (statsPath <> "leader")
+    selfStatsRq   = mkRq baseRq GET (statsPath <> "self")
+    storeStatsRq  = mkRq baseRq GET (statsPath <> "store")
+
+    versionRq = mkRq baseRq GET versionPath
+    healthRq  = mkRq baseRq GET healthPath
+
+    go (GetKey    k ps next) = runHttp (getKeyRq  k ps) keyspaceRs >>= next
+    go (PutKey    k ps next) = runHttp (putKeyRq  k ps) keyspaceRs >>= next
+    go (PostKey   k ps next) = runHttp (postKeyRq k ps) keyspaceRs >>= next
+    go (DeleteKey k ps next) = runHttp (delKeyRq  k ps) keyspaceRs >>= next
+    go (WatchKey  k ps next)
+        = runHttp (watchKeyRq k ps) Right
+      >>= \case rs | emptyResponse rs -> go (WatchKey k ps next)
+                   | otherwise        -> throwInvalidResponse (keyspaceRs rs)
                                      >>= next
-    go (KeyExists k next) rq
-        = empty env ( ignoreStatus
-                    $ mkRq rq HEAD (keysPath <> encodeUtf8 k) Nothing)
-      >>= debugRs
+    go (KeyExists k next)
+        = runHttpEmpty (keyExistsRq k)
       >>= \rs -> case statusCode (HTTP.responseStatus rs) of
                      200 -> next True
                      404 -> next False
-                     _   -> throwM $ HTTP.StatusCodeException (HTTP.responseStatus    rs)
-                                                              (HTTP.responseHeaders   rs)
-                                                              (HTTP.responseCookieJar rs)
+                     _   -> throwM $ HTTP.StatusCodeException
+                                 (HTTP.responseStatus    rs)
+                                 (HTTP.responseHeaders   rs)
+                                 (HTTP.responseCookieJar rs)
 
+    go (ListMembers       next) = runHttp listMembersRq    jsonRs >>= next
+    go (AddMember      us next) = runHttp (addMemberRq us) jsonRs >>= next
+    go (DeleteMember m    next) = runHttpEmpty (delMemberRq m)    >> next
+    go (UpdateMember m us next) = runHttpEmpty (updMemberRq m us) >> next
 
-    go (ListMembers next) rq
-        = http env (mkRq rq GET membersPath Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-    go (AddMember us next) rq
-        = http env (mkRq rq POST membersPath (Just (encode us)))
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-    go (DeleteMember m next) rq
-        = empty env (mkRq rq DELETE (membersPath <> encodeUtf8 m) Nothing)
-       >> next
-    go (UpdateMember m us next) rq
-        = empty env (mkRq rq PUT (membersPath <> encodeUtf8 m) (Just (encode us)))
-       >> next
+    go (GetLeaderStats next) = runHttp leaderStatsRq jsonRs >>= next
+    go (GetSelfStats   next) = runHttp selfStatsRq   jsonRs >>= next
+    go (GetStoreStats  next) = runHttp storeStatsRq  jsonRs >>= next
 
-    go (GetLeaderStats next) rq
-        = http env (mkRq rq GET (statsPath <> "leader") Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-    go (GetSelfStats   next) rq
-        = http env (mkRq rq GET (statsPath <> "self") Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-    go (GetStoreStats  next) rq
-        = http env (mkRq rq GET (statsPath <> "store") Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-
-    go (GetVersion next) rq
-        = http env (mkRq rq GET versionPath Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
-    go (GetHealth  next) rq
-        = http env (mkRq rq GET healthPath Nothing)
-      >>= throwInvalidResponse . jsonResponse
-      >>= debugRs
-      >>= next
+    go (GetVersion next) = runHttp versionRq jsonRs >>= next
+    go (GetHealth  next) = runHttp healthRq  jsonRs >>= next
 
     emptyResponse r
         = statusIsSuccessful (HTTP.responseStatus r)
@@ -261,12 +255,14 @@ http env rq = do
     Log.trace lgr (Log.msg (show rs))
     return rs
 
-mkRq :: Request -> StdMethod -> Strict.ByteString -> Maybe Lazy.ByteString -> Request
-mkRq base m p b = base
+mkRq :: Request -> StdMethod -> Strict.ByteString -> Request
+mkRq base m p = base
     { method      = renderStdMethod m
     , path        = p
-    , requestBody = maybe mempty HTTP.RequestBodyLBS b
     }
+
+rqBdy :: Lazy.ByteString -> Request -> Request
+rqBdy b rq =  rq { requestBody = HTTP.RequestBodyLBS b }
 
 keysPath :: Strict.ByteString
 keysPath = "/v2/keys/"
@@ -287,8 +283,8 @@ throwInvalidResponse :: MonadThrow m => Either String b -> m b
 throwInvalidResponse (Left  e) = throwM $ ClientError (pack e)
 throwInvalidResponse (Right r) = pure r
 
-keyspaceResponse :: HTTP.Response Lazy.ByteString -> Either String Response
-keyspaceResponse rs = do
+keyspaceRs :: HTTP.Response Lazy.ByteString -> Either String Response
+keyspaceRs rs = do
     let hdrs = HTTP.responseHeaders rs
         bdy  = HTTP.responseBody    rs
     cid <- let h = "x-etcd-cluster-id" in expect h (header h hdrs)
@@ -306,8 +302,8 @@ keyspaceResponse rs = do
     expect h     = maybe (Left (unexpected h)) Right
     unexpected h = "Unexpected response: Header " ++ show h ++ " not present"
 
-jsonResponse :: FromJSON a => HTTP.Response Lazy.ByteString -> Either String a
-jsonResponse = eitherDecode . HTTP.responseBody
+jsonRs :: FromJSON a => HTTP.Response Lazy.ByteString -> Either String a
+jsonRs = eitherDecode . HTTP.responseBody
 
 
 debugRq :: (MonadIO m, HasEnv e) => e -> EtcdF a -> m ()
