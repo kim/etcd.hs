@@ -1,6 +1,6 @@
 name:                etcdpp
 version:             0.1.0.0
-synopsis:            Formulation of the etcd API as a free monad
+synopsis:            Formulation of the etcd client API as a free monad
 homepage:            https://github.com/kim/etcdpp
 bug-reports:         https://github.com/kim/etcdpp/issues
 license:             MPL-2.0
