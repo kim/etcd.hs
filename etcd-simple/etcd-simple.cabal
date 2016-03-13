@@ -31,12 +31,9 @@ library
     , http-client
     , http-types
     , lens
-    , monad-control
-    , mtl
     , text
     , tinylog
     , transformers
-    , transformers-base
 
   ghc-options:
     -Wall

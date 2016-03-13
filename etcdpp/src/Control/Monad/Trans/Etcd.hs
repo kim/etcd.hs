@@ -9,9 +9,8 @@
 {-# LANGUAGE UndecidableInstances       #-}
 
 module Control.Monad.Trans.Etcd
-    ( EtcdT
+    ( EtcdT    (..)
     , runEtcdT
-    , module Data.Etcd.Free
     )
 where
 
@@ -24,7 +23,7 @@ import Control.Monad.Trans.Free.Church
 import Data.Etcd.Free
 
 
-newtype EtcdT m a = EtcdT (FT EtcdF m a)
+newtype EtcdT m a = EtcdT { unEtcdT :: FT EtcdF m a }
     deriving ( Functor
              , Applicative
              , Alternative

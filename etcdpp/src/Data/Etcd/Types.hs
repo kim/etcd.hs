@@ -5,7 +5,59 @@
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Data.Etcd.Types where
+module Data.Etcd.Types
+    ( Key
+    , Value
+    , TTL
+    , SetTTL          (..)
+    , EtcdError       (..)
+
+      -- * Keyspace API
+      -- ** Response Types
+    , Response
+    , Rs              (..)
+    , rsFromJSON
+    , Node            (..)
+    , Action          (..)
+    , ResponseMeta    (..)
+    , SuccessResponse (..)
+    , ErrorResponse   (..)
+
+    , hoistError
+
+     -- ** Request Parameters
+    , GetOptions      (..)
+    , getOptions
+    , PutOptions      (..)
+    , putOptions
+    , PostOptions     (..)
+    , postOptions
+    , DeleteOptions   (..)
+    , deleteOptions
+    , WatchOptions    (_watchRecursive, _watchWaitIndex)
+    , watchOptions
+
+      -- * Members API
+    , Members         (..)
+    , MemberId
+    , Member          (..)
+    , URL             (..)
+    , PeerURLs        (..)
+
+      -- * Stats API
+    , LeaderStats     (..)
+    , FollowerStats   (..)
+    , FollowerCounts  (..)
+    , FollowerLatency (..)
+    , SelfStats       (..)
+    , LeaderInfo      (..)
+    , StoreStats      (..)
+
+      -- * Misc API
+    , Version         (..)
+    , Health          (..)
+    )
+where
 
 import           Control.Applicative
 import           Control.Monad.Catch
@@ -129,9 +181,9 @@ data ErrorResponse = ErrorResponse
 instance FromJSON ErrorResponse
 
 data GetOptions = GetOptions
-    { _gRecursive :: !Bool
-    , _gSorted    :: !Bool
-    , _gQuorum    :: !Bool
+    { _getRecursive :: !Bool
+    , _getSorted    :: !Bool
+    , _getQuorum    :: !Bool
     } deriving Show
 
 instance QueryLike GetOptions where
@@ -143,19 +195,19 @@ instance QueryLike GetOptions where
 
 getOptions :: GetOptions
 getOptions = GetOptions
-    { _gRecursive = False
-    , _gSorted    = False
-    , _gQuorum    = False
+    { _getRecursive = False
+    , _getSorted    = False
+    , _getQuorum    = False
     }
 
 data PutOptions = PutOptions
-    { _pValue     :: Maybe Text
-    , _pTTL       :: Maybe SetTTL
-    , _pPrevValue :: Maybe Text
-    , _pPrevIndex :: Maybe Word64
-    , _pPrevExist :: Maybe Bool -- ^ 'Nothing' = don't care
-    , _pRefresh   :: !Bool
-    , _pDir       :: !Bool
+    { _putValue     :: Maybe Text
+    , _putTTL       :: Maybe SetTTL
+    , _putPrevValue :: Maybe Text
+    , _putPrevIndex :: Maybe Word64
+    , _putPrevExist :: Maybe Bool -- ^ 'Nothing' = don't care
+    , _putRefresh   :: !Bool
+    , _putDir       :: !Bool
     } deriving Show
 
 instance QueryLike PutOptions where
@@ -171,18 +223,18 @@ instance QueryLike PutOptions where
 
 putOptions :: PutOptions
 putOptions = PutOptions
-    { _pValue     = Nothing
-    , _pTTL       = Nothing
-    , _pPrevValue = Nothing
-    , _pPrevIndex = Nothing
-    , _pPrevExist = Nothing
-    , _pRefresh   = False
-    , _pDir       = False
+    { _putValue     = Nothing
+    , _putTTL       = Nothing
+    , _putPrevValue = Nothing
+    , _putPrevIndex = Nothing
+    , _putPrevExist = Nothing
+    , _putRefresh   = False
+    , _putDir       = False
     }
 
 data PostOptions = PostOptions
-    { _cValue :: Maybe Text
-    , _cTTL   :: Maybe TTL
+    { _postValue :: Maybe Text
+    , _postTTL   :: Maybe TTL
     } deriving Show
 
 instance QueryLike PostOptions where
@@ -193,15 +245,15 @@ instance QueryLike PostOptions where
 
 postOptions :: PostOptions
 postOptions = PostOptions
-    { _cValue = Nothing
-    , _cTTL   = Nothing
+    { _postValue = Nothing
+    , _postTTL   = Nothing
     }
 
 data DeleteOptions = DeleteOptions
-    { _dRecursive :: !Bool
-    , _dPrevValue :: Maybe Text
-    , _dPrevIndex :: Maybe Word64
-    , _dDir       :: !Bool
+    { _delRecursive :: !Bool
+    , _delPrevValue :: Maybe Text
+    , _delPrevIndex :: Maybe Word64
+    , _delDir       :: !Bool
     } deriving Show
 
 instance QueryLike DeleteOptions where
@@ -214,16 +266,16 @@ instance QueryLike DeleteOptions where
 
 deleteOptions :: DeleteOptions
 deleteOptions = DeleteOptions
-    { _dRecursive = False
-    , _dPrevValue = Nothing
-    , _dPrevIndex = Nothing
-    , _dDir       = False
+    { _delRecursive = False
+    , _delPrevValue = Nothing
+    , _delPrevIndex = Nothing
+    , _delDir       = False
     }
 
 data WatchOptions = WatchOptions
-    { _wWait      :: !Bool -- nb. always 'True'
-    , _wRecursive :: !Bool
-    , _wWaitIndex :: Maybe Word64
+    { _watchWait      :: !Bool -- nb. always 'True'
+    , _watchRecursive :: !Bool
+    , _watchWaitIndex :: Maybe Word64
     } deriving Show
 
 instance QueryLike WatchOptions where
@@ -235,10 +287,11 @@ instance QueryLike WatchOptions where
 
 watchOptions :: WatchOptions
 watchOptions = WatchOptions
-    { _wWait      = True
-    , _wRecursive = False
-    , _wWaitIndex = Nothing
+    { _watchWait      = True
+    , _watchRecursive = False
+    , _watchWaitIndex = Nothing
     }
+
 --------------------------------------------------------------------------------
 -- Members API
 --------------------------------------------------------------------------------
@@ -251,10 +304,10 @@ instance FromJSON Members
 type MemberId = Text
 
 data Member = Member
-    { mId         :: Maybe MemberId
-    , mName       :: Maybe Text
-    , mPeerURLs   :: [URL]
-    , mClientURLs :: Maybe [URL]
+    { _mId         :: Maybe MemberId
+    , _mName       :: Maybe Text
+    , _mPeerURLs   :: [URL]
+    , _mClientURLs :: Maybe [URL]
     } deriving (Show, Generic)
 
 instance FromJSON Member where parseJSON = gParsePrefixed
@@ -288,79 +341,79 @@ instance ToJSON   PeerURLs
 --------------------------------------------------------------------------------
 
 data LeaderStats = LeaderStats
-    { lsLeader    :: !Text
-    , lsFollowers :: !(HashMap Text FollowerStats)
+    { _lsLeader    :: !Text
+    , _lsFollowers :: !(HashMap Text FollowerStats)
     } deriving (Show, Generic)
 
 instance FromJSON LeaderStats where parseJSON = gParsePrefixed
 
 
 data FollowerStats = FollowerStats
-    { fsCounts  :: !FollowerCounts
-    , fsLatency :: !FollowerLatency
+    { _fsCounts  :: !FollowerCounts
+    , _fsLatency :: !FollowerLatency
     } deriving (Show, Generic)
 
 instance FromJSON FollowerStats where parseJSON = gParsePrefixed
 
 
 data FollowerCounts = FollowerCounts
-    { fcFail    :: !Word64
-    , fcSuccess :: !Word64
+    { _fcFail    :: !Word64
+    , _fcSuccess :: !Word64
     } deriving (Show, Generic)
 
 instance FromJSON FollowerCounts where parseJSON = gParsePrefixed
 
 
 data FollowerLatency = FollowerLatency
-    { flAverage           :: !Double
-    , flCurrent           :: !Double
-    , flMaximum           :: !Double
-    , flMinimum           :: !Double
-    , flStandardDeviation :: !Double
+    { _flAverage           :: !Double
+    , _flCurrent           :: !Double
+    , _flMaximum           :: !Double
+    , _flMinimum           :: !Double
+    , _flStandardDeviation :: !Double
     } deriving (Show, Generic)
 
 instance FromJSON FollowerLatency where parseJSON = gParsePrefixed
 
 
 data SelfStats = SelfStats
-    { ssId                   :: !Text
-    , ssLeaderInfo           :: !LeaderInfo
-    , ssName                 :: !Text
-    , ssRecvAppendRequestCnt :: !Word64
-    , ssRecvBandwidthRate    :: !Double
-    , ssRecvPkgRate          :: !Double
-    , ssSendAppendRequestCnt :: !Word64
-    , ssStartTime            :: !UTCTime
-    , ssState                :: !Text -- todo
+    { _ssId                   :: !Text
+    , _ssLeaderInfo           :: !LeaderInfo
+    , _ssName                 :: !Text
+    , _ssRecvAppendRequestCnt :: !Word64
+    , _ssRecvBandwidthRate    :: !Double
+    , _ssRecvPkgRate          :: !Double
+    , _ssSendAppendRequestCnt :: !Word64
+    , _ssStartTime            :: !UTCTime
+    , _ssState                :: !Text -- todo
     } deriving (Show, Generic)
 
 instance FromJSON SelfStats where parseJSON = gParsePrefixed
 
 
 data LeaderInfo = LeaderInfo
-    { liLeader    :: !Text
-    , liStartTime :: !UTCTime
-    , liUptime    :: !Text -- todo
+    { _liLeader    :: !Text
+    , _liStartTime :: !UTCTime
+    , _liUptime    :: !Text -- todo
     } deriving (Show, Generic)
 
 instance FromJSON LeaderInfo where parseJSON = gParsePrefixed
 
 
 data StoreStats = StoreStats
-    { stsCompareAndSwapFail    :: !Word64
-    , stsCompareAndSwapSuccess :: !Word64
-    , stsCreateFail            :: !Word64
-    , stsCreateSuccess         :: !Word64
-    , stsDeleteFail            :: !Word64
-    , stsDeleteSuccess         :: !Word64
-    , stsExpireCount           :: !Word64
-    , stsGetsFail              :: !Word64
-    , stsGetsSuccess           :: !Word64
-    , stsSetsFail              :: !Word64
-    , stsSetsSuccess           :: !Word64
-    , stsUpdateFail            :: !Word64
-    , stsUpdateSuccess         :: !Word64
-    , stsWatchers              :: !Word64
+    { _stsCompareAndSwapFail    :: !Word64
+    , _stsCompareAndSwapSuccess :: !Word64
+    , _stsCreateFail            :: !Word64
+    , _stsCreateSuccess         :: !Word64
+    , _stsDeleteFail            :: !Word64
+    , _stsDeleteSuccess         :: !Word64
+    , _stsExpireCount           :: !Word64
+    , _stsGetsFail              :: !Word64
+    , _stsGetsSuccess           :: !Word64
+    , _stsSetsFail              :: !Word64
+    , _stsSetsSuccess           :: !Word64
+    , _stsUpdateFail            :: !Word64
+    , _stsUpdateSuccess         :: !Word64
+    , _stsWatchers              :: !Word64
     } deriving (Show, Generic)
 
 instance FromJSON StoreStats where parseJSON = gParsePrefixed

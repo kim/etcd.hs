@@ -2,68 +2,57 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE UndecidableInstances       #-}
-{-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Database.Etcd.Simple
     ( Env
-    , HasEnv      (..)
-    , Client
-    , EtcdError   (..)
-    , MonadClient (..)
+    , HasEnv (..)
 
     , mkEnv
     , mkEnv'
-    , runClient
-    , runClient'
 
-    , runEtcdIO
+    , runEtcd
+    , interpret
 
-    , module Control.Monad.Trans.Etcd
+    , module Control.Monad.Etcd
     )
 where
 
-import           Control.Concurrent          (myThreadId)
-import           Control.Lens                (Lens', lens, view)
-import           Control.Monad.Base
+import           Control.Concurrent         (myThreadId)
+import           Control.Lens               (Lens', lens, view)
 import           Control.Monad.Catch
-import           Control.Monad.Etcd.Class
+import           Control.Monad.Etcd
 import           Control.Monad.IO.Class
-import           Control.Monad.Reader
-import           Control.Monad.Trans.Control
 import           Control.Monad.Trans.Etcd
-import           Control.Monad.Trans.Free
-import           Data.Aeson                  (eitherDecode, encode)
-import           Data.Aeson.Types            (FromJSON, parseEither)
+import           Data.Aeson                 (eitherDecode, encode)
+import           Data.Aeson.Types           (FromJSON, parseEither)
 import           Data.Bitraversable
-import qualified Data.ByteString             as Strict
-import           Data.ByteString.Builder     (charUtf8, toLazyByteString)
+import qualified Data.ByteString            as Strict
+import           Data.ByteString.Builder    (charUtf8, toLazyByteString)
 import           Data.ByteString.Conversion
-import qualified Data.ByteString.Lazy        as Lazy
-import           Data.List                   (intersperse)
+import qualified Data.ByteString.Lazy       as Lazy
+import           Data.Etcd.Free
+import           Data.List                  (intersperse)
 import           Data.Maybe
 import           Data.Monoid
-import           Data.Text                   (pack)
+import           Data.Text                  (pack)
 import           Data.Text.Encoding
-import           Network.HTTP.Client         (Request (..))
-import qualified Network.HTTP.Client         as HTTP
+import           Network.HTTP.Client        (Request (..))
+import qualified Network.HTTP.Client        as HTTP
 import           Network.HTTP.Types
-import qualified System.Logger               as Log
-import           System.Logger.Class         hiding (eval)
+import qualified System.Logger              as Log
 
 
+-- | The environment required for the interpreter
 data Env = Env
     { _baseRequest :: !Request
     , _httpManager :: !HTTP.Manager
     , _logger      :: !Log.Logger
     }
 
+-- | A generalization of the environment, such that it can be embedded in bigger
+-- environments.
 class HasEnv a where
     environment :: Lens' a Env
 
@@ -86,61 +75,29 @@ instance HasEnv Env where
     environment = id
 
 
-newtype Client a = Client { client :: ReaderT Env IO a }
-    deriving ( Functor
-             , Applicative
-             , Monad
-             , MonadIO
-             , MonadBase IO
-             , MonadThrow
-             , MonadCatch
-             , MonadReader Env
-             )
-
-instance MonadBaseControl IO Client where
-    type StM Client a = StM (ReaderT Env IO) a
-
-    liftBaseWith f = Client $ liftBaseWith $ \run -> f (run . client)
-    restoreM       = Client . restoreM
-
-instance MonadLogger Client where
-    log l m = view logger >>= \lgr -> Log.log lgr l m
-
-class ( Functor      m
-      , Applicative  m
-      , Monad        m
-      , MonadIO      m
-      , MonadCatch   m
-      )
-      => MonadClient m
-  where
-    liftClient :: Client a -> m a
-
-instance MonadClient Client where
-    liftClient = id
-
-instance MonadEtcd Client where
-    liftEtcd m = view environment >>= \e -> iterT (runEtcdIO e) m
-
-
-runClient :: (MonadIO m, HasEnv e) => e -> Client a -> m a
-runClient (view environment -> e) (client -> a) = liftIO $ runReaderT a e
-
-runClient' :: (MonadIO m, MonadCatch m) => String -> Client a -> m a
-runClient' url a = mkEnv' url >>= (`runClient` a)
-
+-- | Contruct an 'Env'ironment
 mkEnv :: MonadThrow m => String -> HTTP.Manager -> Log.Logger -> m Env
 mkEnv url mgr lgr = Env <$> HTTP.parseUrl url <*> pure mgr <*> pure lgr
 
+-- | Contstruct an 'Env'ironment from just a URL of an etcd server
 mkEnv' :: (MonadIO m, MonadThrow m) => String -> m Env
 mkEnv' url = do
     mgr <- liftIO $ HTTP.newManager HTTP.defaultManagerSettings
     lgr <- Log.new $ Log.setName (Just "etcd-simple") Log.defSettings
     mkEnv url mgr lgr
 
+-- | Interpret a computation in the 'EtcdT' monad transformer
+runEtcd :: (MonadIO m, MonadCatch m, HasEnv e) => e -> EtcdT m a -> m a
+runEtcd e = runEtcdT (interpret e)
 
-runEtcdIO :: (MonadIO m, MonadThrow m, HasEnv e) => e -> EtcdF (m a) -> m a
-runEtcdIO env f = debugRq env f *> go f
+-- | An interpreter of the free monad over 'EtcdF'
+--
+-- May throw 'HTTPException' if a transport error occurs or the server responds
+-- with an unexpected status code. 'EtcdException' ('ClientError') will be
+-- thrown if the server responds with invalid data (eg. because we're not
+-- talking to an actual etcd server).
+interpret :: (MonadIO m, MonadThrow m, HasEnv e) => e -> EtcdF (m a) -> m a
+interpret env f = debugRq env f *> go f
   where
     runHttp
         :: ( MonadIO    m
@@ -156,47 +113,75 @@ runEtcdIO env f = debugRq env f *> go f
     baseRq = view baseRequest env
 
     getKeyRq k ps
-        = ignoreStatus
+        = rqMethod GET
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
         . HTTP.setQueryString (toQuery ps)
-        $ mkRq baseRq GET (keysPath <> encodeUtf8 k)
+        $ baseRq
 
     putKeyRq k ps
-        = ignoreStatus
-        . (\rq' -> rq' { method = "PUT" })
+        = rqMethod PUT
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
         . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ mkRq baseRq PUT (keysPath <> encodeUtf8 k)
+        $ baseRq
 
     postKeyRq k ps
-        = ignoreStatus
+        = rqMethod POST
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
         . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ mkRq baseRq POST (keysPath <> encodeUtf8 k)
+        $ baseRq
 
     delKeyRq k ps
-        = ignoreStatus
+        = rqMethod DELETE
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
         . HTTP.setQueryString (toQuery ps)
-        $ mkRq baseRq DELETE (keysPath <> encodeUtf8 k)
+        $ baseRq
 
     watchKeyRq k ps
-        = ignoreStatus
+        = rqMethod GET
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
         . HTTP.setQueryString (toQuery ps)
-        $ mkRq baseRq GET (keysPath <> encodeUtf8 k)
+        $ baseRq
 
     keyExistsRq k
-        = ignoreStatus
-        $ mkRq baseRq HEAD (keysPath <> encodeUtf8 k)
+        = rqMethod HEAD
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        $ baseRq
 
-    listMembersRq    = mkRq baseRq GET membersPath
-    addMemberRq   us = rqBdy (encode us) $ mkRq baseRq POST membersPath
-    delMemberRq m    = mkRq baseRq DELETE (membersPath <> encodeUtf8 m)
-    updMemberRq m us = rqBdy (encode us)
-                     $ mkRq baseRq PUT (membersPath <> encodeUtf8 m)
 
-    leaderStatsRq = mkRq baseRq GET (statsPath <> "leader")
-    selfStatsRq   = mkRq baseRq GET (statsPath <> "self")
-    storeStatsRq  = mkRq baseRq GET (statsPath <> "store")
+    listMembersRq
+        = rqMethod GET
+        . rqPath membersPath
+        $ baseRq
 
-    versionRq = mkRq baseRq GET versionPath
-    healthRq  = mkRq baseRq GET healthPath
+    addMemberRq us
+        = rqMethod POST
+        . rqPath membersPath
+        . rqBdy (encode us)
+        $ baseRq
+
+    delMemberRq m
+        = rqMethod DELETE
+        . rqPath (membersPath <> encodeUtf8 m)
+        $ baseRq
+
+    updMemberRq m us
+        = rqMethod PUT
+        . rqPath (membersPath <> encodeUtf8 m)
+        . rqBdy (encode us)
+        $ baseRq
+
+    leaderStatsRq = rqMethod GET . rqPath (statsPath <> "leader") $ baseRq
+    selfStatsRq   = rqMethod GET . rqPath (statsPath <> "self")   $ baseRq
+    storeStatsRq  = rqMethod GET . rqPath (statsPath <> "store")  $ baseRq
+
+    versionRq = rqMethod GET . rqPath versionPath $ baseRq
+    healthRq  = rqMethod GET . rqPath healthPath  $ baseRq
 
     go (GetKey    k ps next) = runHttp (getKeyRq  k ps) keyspaceRs >>= next
     go (PutKey    k ps next) = runHttp (putKeyRq  k ps) keyspaceRs >>= next
@@ -229,11 +214,18 @@ runEtcdIO env f = debugRq env f *> go f
     go (GetVersion next) = runHttp versionRq jsonRs >>= next
     go (GetHealth  next) = runHttp healthRq  jsonRs >>= next
 
+    -- A long-polling watch may be terminated by the server (or due to network
+    -- failure) at any time. Since the response headers are sent immediately, we
+    -- can detect this if we have a success HTTP status with an empty response
+    -- body, and simply try again.
     emptyResponse r
         = statusIsSuccessful (HTTP.responseStatus r)
        && Lazy.null (HTTP.responseBody r)
 
-    ignoreStatus rq = rq { checkStatus = \_ _ _ -> Nothing }
+    ignoreStatus rq = rq
+        { checkStatus = \s h c ->
+            if statusIsServerError s then checkStatus rq s h c else Nothing
+        }
 
     debugRs :: (Show a, MonadIO m) => a -> m a
     debugRs a = do
@@ -244,22 +236,30 @@ runEtcdIO env f = debugRq env f *> go f
 
 
 empty :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response ())
-empty env rq = liftIO $ HTTP.httpNoBody rq (view httpManager env)
+empty env rq = runRq env rq HTTP.httpNoBody
 
 http :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response Lazy.ByteString)
-http env rq = do
-    let lgr = view logger       env
-        mgr = view httpManager  env
+http env rq = runRq env rq HTTP.httpLbs
+
+runRq :: (MonadIO m, HasEnv e, Show a)
+      => e
+      -> Request
+      -> (Request -> HTTP.Manager -> IO (HTTP.Response a))
+      -> m (HTTP.Response a)
+runRq env rq f = do
     Log.trace lgr (Log.msg (show rq))
-    rs  <- liftIO $ HTTP.httpLbs rq mgr
+    rs <- liftIO $ f rq mgr
     Log.trace lgr (Log.msg (show rs))
     return rs
+  where
+    lgr = view logger      env
+    mgr = view httpManager env
 
-mkRq :: Request -> StdMethod -> Strict.ByteString -> Request
-mkRq base m p = base
-    { method      = renderStdMethod m
-    , path        = p
-    }
+rqMethod :: StdMethod -> Request -> Request
+rqMethod m rq = rq { method = renderStdMethod m }
+
+rqPath :: Strict.ByteString -> Request -> Request
+rqPath p rq = rq { path = p }
 
 rqBdy :: Lazy.ByteString -> Request -> Request
 rqBdy b rq =  rq { requestBody = HTTP.RequestBodyLBS b }

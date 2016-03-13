@@ -33,7 +33,7 @@ waitOn :: (MonadThrow m, MonadFree EtcdF m) => Key -> m ()
 waitOn k = get k >>= maybe (pure ()) wait
 
 get :: (MonadThrow m, MonadFree EtcdF m) => Key -> m (Maybe Barrier)
-get k = getKey k getOptions { _gQuorum = True }
+get k = getKey k getOptions { _getQuorum = True }
     >>= either (fmap (Just . Barrier . view (rsBody . rsNode)) . hoistError)
                (const (return Nothing))
       . matching _KeyNotFound
@@ -42,7 +42,8 @@ wait :: (MonadThrow m, MonadFree EtcdF m) => Barrier -> m ()
 wait (Barrier bn) = watch bn
   where
     watch n = do
-        rs <- watchKey (_nodeKey n) watchOptions { _wWaitIndex = Just (_nodeModifiedIndex n) }
+        rs <- watchKey (_nodeKey n)
+                       watchOptions { _watchWaitIndex = Just (_nodeModifiedIndex n) }
             >>= hoistError
         case view (rsBody . rsAction) rs of
             ActionDelete -> return ()

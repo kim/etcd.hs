@@ -21,27 +21,28 @@ import Data.Word                  (Word16)
 enqueue
     :: ( MonadThrow      m
        , MonadFree EtcdF m
-       ) 
+       )
     => Key
     -> Maybe Text
-    -> Word16 
+    -> Word16
     -> m Node
 enqueue k v p
-    = postKey kp postOptions { _cValue = v }
+    = postKey kp postOptions { _postValue = v }
   >>= fmap (_rsNode . _rsBody) . hoistError
   where
     kp = toStrict . toLazyText $ fromText k <> singleton '/' <> decimal p
 
 dequeue :: (MonadThrow m, MonadFree EtcdF m) => Key -> m Node
 dequeue k = do
-    rs <- getKey k getOptions { _gRecursive = True, _gSorted = True }
+    rs <- getKey k getOptions { _getRecursive = True, _getSorted = True }
       >>= fmap (_rsNode . _rsBody) . hoistError
     case concatMap _nodeNodes (_nodeNodes rs) of
         [] -> watchEnqueue (_nodeModifiedIndex rs)
         xs -> tryClaim xs
   where
     watchEnqueue idx = do
-        rs <- watchKey k watchOptions { _wWaitIndex = Just idx, _wRecursive = True }
+        rs <- watchKey k watchOptions { _watchRecursive = True
+                                      , _watchWaitIndex = Just idx }
           >>= hoistError
         case _rsAction . _rsBody $ rs of
             ActionCreate -> claim (_rsNode . _rsBody $ rs)
@@ -52,5 +53,5 @@ dequeue k = do
     tryClaim (x:xs) = claim x
                   >>= either (const (tryClaim xs)) (pure . _rsNode . _rsBody)
 
-    claim n = deleteKey (_nodeKey n) 
-                        deleteOptions { _dPrevIndex = Just (_nodeModifiedIndex n) }
+    claim n = deleteKey (_nodeKey n)
+                        deleteOptions { _delPrevIndex = Just (_nodeModifiedIndex n) }

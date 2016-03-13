@@ -22,14 +22,15 @@ where
 import Control.Concurrent.Async.Lifted
 import Control.Monad                   (void)
 import Control.Monad.Catch
-import Control.Monad.Etcd.Class
+import Control.Monad.Etcd              (MonadEtcd (..))
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
+import Control.Monad.Trans.Etcd
 import Control.Monad.Trans.Free
 import Data.Bifunctor
 import Data.Etcd.Free
-import Data.Etcd.Recipes.Internal
 import Data.Etcd.Recipes.Ephemeral
+import Data.Etcd.Recipes.Internal
 import Data.Function                   (on)
 import Data.Monoid
 import Data.Text                       (Text)
@@ -51,7 +52,7 @@ withDoubleBarrier
     -> Maybe Text
     -> Word16
     -> TTL
-    -> FreeT EtcdF m a
+    -> m a
     -> m a
 withDoubleBarrier k v c t f
     = liftEtcd (enter k v c t)
@@ -62,12 +63,12 @@ onEntered
     :: ( MonadEtcd           m
        , MonadBaseControl IO m
        )
-    => FreeT EtcdF m a
-    -> Entered (FreeT EtcdF m)
+    => m a
+    -> Entered (EtcdT m)
     -> m (MayLeave, a)
 onEntered f (Entered eph waitReady)
     = race (liftEtcd (_ephHeartbeat eph))
-           (liftEtcd $ waitReady >>= \ml -> (,) ml <$> f)
+           (liftEtcd waitReady >>= \ml -> (,) ml <$> f)
   >>= return . either absurd id
 
 enter
@@ -85,7 +86,7 @@ enter k v cnt t
            (newUniqueEphemeralNode (k <> "/waiters") v t)
   where
     waitReady eph = do
-        ls <- getKey (k <> "/waiters") getOptions { _gQuorum = True }
+        ls <- getKey (k <> "/waiters") getOptions { _getQuorum = True }
           >>= fmap (_nodeNodes . _rsNode . _rsBody) . hoistError
 
         if fromIntegral (length ls) >= cnt then
@@ -96,7 +97,7 @@ enter k v cnt t
         return $ MayLeave k (_nodeKey . _ephNode $ eph)
 
     watchReady idx = do
-        rs <- watchKey (k <> "/ready") watchOptions { _wWaitIndex = Just idx }
+        rs <- watchKey (k <> "/ready") watchOptions { _watchWaitIndex = Just idx }
           >>= fmap _rsBody . hoistError
         case _rsAction rs of
             ActionSet -> return ()
@@ -105,7 +106,7 @@ enter k v cnt t
 
 leave :: (MonadThrow m, MonadFree EtcdF m) => MayLeave -> m ()
 leave (MayLeave k me) = do
-    ls <- getKey (k <> "/waiters") getOptions { _gQuorum = True }
+    ls <- getKey (k <> "/waiters") getOptions { _getQuorum = True }
       >>= fmap (_nodeNodes . _rsNode . _rsBody) . hoistError
 
     case ls of
@@ -126,7 +127,7 @@ leave (MayLeave k me) = do
 
     watchDisappear n = do
         rs <- watchKey (_nodeKey n)
-                       watchOptions { _wWaitIndex = Just (_nodeModifiedIndex n + 1) } -- why n+1 here?
+                       watchOptions { _watchWaitIndex = Just (_nodeModifiedIndex n + 1) } -- why n+1 here?
           >>= fmap _rsBody . hoistError
         case _rsAction rs of
             ActionDelete -> return ()

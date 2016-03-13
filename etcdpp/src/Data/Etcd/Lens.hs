@@ -2,8 +2,9 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE LambdaCase      #-}
+{-# LANGUAGE Rank2Types      #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Data.Etcd.Lens
     ( -- * Responses
@@ -32,32 +33,32 @@ module Data.Etcd.Lens
     , nodeTTL
 
       -- * 'GetOptions'
-    , gRecursive
-    , gSorted
-    , gQuorum
+    , getRecursive
+    , getSorted
+    , getQuorum
 
       -- * 'PutOptions'
-    , pValue
-    , pTTL
-    , pPrevValue
-    , pPrevIndex
-    , pPrevExist
-    , pRefresh
-    , pDir
+    , putValue
+    , putTTL
+    , putPrevValue
+    , putPrevIndex
+    , putPrevExist
+    , putRefresh
+    , putDir
 
       -- * 'PostOptions'
-    , cValue
-    , cTTL
+    , postValue
+    , postTTL
 
       -- * 'DeleteOptions'
-    , dRecursive
-    , dPrevValue
-    , dPrevIndex
-    , dDir
+    , delRecursive
+    , delPrevValue
+    , delPrevIndex
+    , delDir
 
       -- * 'WatchOptions'
-    , wRecursive
-    , wWaitIndex
+    , watchRecursive
+    , watchWaitIndex
 
       -- * Response Prisms
     , _KeyNotFound
@@ -76,140 +77,90 @@ module Data.Etcd.Lens
     , _LeaderElect
     , _WatcherCleared
     , _EventIndexCleared
+
+      -- * 'Member'
+    , mId
+    , mName
+    , mPeerURLs
+    , mClientURLs
+
+      -- * 'LeaderStats'
+    , lsLeader
+    , lsFollowers
+
+      -- * 'FollowerStats'
+    , fsCounts
+    , fsLatency
+
+      -- * 'FollowerCounts'
+    , fcFail
+    , fcSuccess
+
+      -- * 'FollowerLatency'
+    , flAverage
+    , flCurrent
+    , flMaximum
+    , flMinimum
+    , flStandardDeviation
+
+      -- * 'SelfStats'
+    , ssId
+    , ssLeaderInfo
+    , ssName
+    , ssRecvAppendRequestCnt
+    , ssRecvBandwidthRate
+    , ssRecvPkgRate
+    , ssSendAppendRequestCnt
+    , ssStartTime
+    , ssState
+
+      -- * 'LeaderInfo'
+    , liLeader
+    , liStartTime
+    , liUptime
+
+      -- * 'StoreStats'
+    , stsCompareAndSwapFail
+    , stsCompareAndSwapSuccess
+    , stsCreateFail
+    , stsCreateSuccess
+    , stsDeleteFail
+    , stsDeleteSuccess
+    , stsExpireCount
+    , stsGetsFail
+    , stsGetsSuccess
+    , stsSetsFail
+    , stsSetsSuccess
+    , stsUpdateFail
+    , stsUpdateSuccess
+    , stsWatchers
     )
 where
 
 import Control.Exception
 import Control.Lens
 import Data.Etcd.Types
-import Data.Text         (Text)
-import Data.Time         (UTCTime)
-import Data.Word         (Word16, Word64)
+import Data.Word
 
 
-rsMeta :: Lens' (Rs a) ResponseMeta
-rsMeta = lens _rsMeta (\s a -> s { _rsMeta = a })
-
-rsBody :: Lens' (Rs a) a
-rsBody = lens _rsBody (\s a -> s { _rsBody = a })
-
-rsAction :: Lens' SuccessResponse Action
-rsAction = lens _rsAction (\s a -> s { _rsAction = a })
-
-rsNode :: Lens' SuccessResponse Node
-rsNode = lens _rsNode (\s a -> s { _rsNode = a })
-
-rsPrevNode :: Lens' SuccessResponse (Maybe Node)
-rsPrevNode = lens _rsPrevNode (\s a -> s { _rsPrevNode = a })
-
-rsErrorCode :: Lens' ErrorResponse Word16
-rsErrorCode = lens _rsErrorCode (\s a -> s { _rsErrorCode = a })
-
-rsMessage :: Lens' ErrorResponse Text
-rsMessage = lens _rsMessage (\s a -> s { _rsMessage = a })
-
-rsCause :: Lens' ErrorResponse Text
-rsCause = lens _rsCause (\s a -> s { _rsCause = a })
-
-rsIndex :: Lens' ErrorResponse Word64
-rsIndex = lens _rsIndex (\s a -> s { _rsIndex = a })
-
-etcdClusterId :: Lens' ResponseMeta Text
-etcdClusterId = lens _etcdClusterId (\s a -> s { _etcdClusterId = a })
-
-etcdIndex :: Lens' ResponseMeta Word64
-etcdIndex = lens _etcdIndex (\s a -> s { _etcdIndex = a })
-
-raftIndex :: Lens' ResponseMeta (Maybe Word64)
-raftIndex = lens _raftIndex (\s a -> s { _raftIndex = a })
-
-raftTerm :: Lens' ResponseMeta (Maybe Word64)
-raftTerm = lens _raftTerm (\s a -> s { _raftTerm = a })
-
-
-nodeKey :: Lens' Node Text
-nodeKey = lens _nodeKey (\s a -> s { _nodeKey = a })
-
-nodeDir :: Lens' Node Bool
-nodeDir = lens _nodeDir (\s a -> s { _nodeDir = a })
-
-nodeValue :: Lens' Node (Maybe Text)
-nodeValue = lens _nodeValue (\s a -> s { _nodeValue = a })
-
-nodeNodes :: Lens' Node [Node]
-nodeNodes = lens _nodeNodes (\s a -> s { _nodeNodes = a })
-
-nodeCreatedIndex :: Lens' Node Word64
-nodeCreatedIndex = lens _nodeCreatedIndex (\s a -> s { _nodeCreatedIndex = a })
-
-nodeModifiedIndex :: Lens' Node Word64
-nodeModifiedIndex = lens _nodeModifiedIndex (\s a -> s { _nodeModifiedIndex = a })
-
-nodeExpiration :: Lens' Node (Maybe UTCTime)
-nodeExpiration = lens _nodeExpiration (\s a -> s { _nodeExpiration = a })
-
-nodeTTL :: Lens' Node (Maybe TTL)
-nodeTTL = lens _nodeTTL (\s a -> s { _nodeTTL = a })
-
-
-gRecursive :: Lens' GetOptions Bool
-gRecursive = lens _gRecursive (\s a -> s { _gRecursive = a })
-
-gSorted :: Lens' GetOptions Bool
-gSorted = lens _gSorted (\s a -> s { _gSorted = a })
-
-gQuorum :: Lens' GetOptions Bool
-gQuorum = lens _gQuorum (\s a -> s { _gQuorum = a })
-
-
-pValue :: Lens' PutOptions (Maybe Value)
-pValue = lens _pValue (\s a -> s { _pValue = a })
-
-pTTL :: Lens' PutOptions (Maybe SetTTL)
-pTTL = lens _pTTL (\s a -> s { _pTTL = a })
-
-pPrevValue :: Lens' PutOptions (Maybe Value)
-pPrevValue = lens _pPrevValue (\s a -> s { _pPrevValue = a })
-
-pPrevIndex :: Lens' PutOptions (Maybe Word64)
-pPrevIndex = lens _pPrevIndex (\s a -> s { _pPrevIndex = a })
-
-pPrevExist :: Lens' PutOptions (Maybe Bool)
-pPrevExist = lens _pPrevExist (\s a -> s { _pPrevExist = a })
-
-pRefresh :: Lens' PutOptions Bool
-pRefresh = lens _pRefresh (\s a -> s { _pRefresh = a })
-
-pDir :: Lens' PutOptions Bool
-pDir = lens _pDir (\s a -> s { _pDir = a })
-
-
-cValue :: Lens' PostOptions (Maybe Text)
-cValue = lens _cValue (\s a -> s { _cValue = a })
-
-cTTL :: Lens' PostOptions (Maybe Word64)
-cTTL = lens _cTTL (\s a -> s { _cTTL = a })
-
-
-dRecursive :: Lens' DeleteOptions Bool
-dRecursive = lens _dRecursive (\s a -> s { _dRecursive = a })
-
-dPrevValue :: Lens' DeleteOptions (Maybe Value)
-dPrevValue = lens _dPrevValue (\s a -> s { _dPrevValue = a })
-
-dPrevIndex :: Lens' DeleteOptions (Maybe Word64)
-dPrevIndex = lens _dPrevIndex (\s a -> s { _dPrevIndex = a })
-
-dDir :: Lens' DeleteOptions Bool
-dDir = lens _dDir (\s a -> s { _dDir = a })
-
-
-wRecursive :: Lens' WatchOptions Bool
-wRecursive = lens _wRecursive (\s a -> s { _wRecursive = a })
-
-wWaitIndex :: Lens' WatchOptions (Maybe Word64)
-wWaitIndex = lens _wWaitIndex (\s a -> s { _wWaitIndex = a })
-
+makeLenses ''Rs
+makeLenses ''Node
+makeLenses ''ResponseMeta
+makeLenses ''SuccessResponse
+makeLenses ''ErrorResponse
+makeLenses ''GetOptions
+makeLenses ''PutOptions
+makeLenses ''PostOptions
+makeLenses ''DeleteOptions
+makeLenses ''WatchOptions
+makeLenses ''Member
+makeLenses ''LeaderStats
+makeLenses ''FollowerStats
+makeLenses ''FollowerCounts
+makeLenses ''FollowerLatency
+makeLenses ''SelfStats
+makeLenses ''LeaderInfo
+makeLenses ''StoreStats
 
 _EtcdError :: Prism' SomeException EtcdError
 _EtcdError = prism' toException fromException

@@ -40,7 +40,7 @@ newUniqueEphemeralNode
     -> TTL
     -> m (EphemeralNode m)
 newUniqueEphemeralNode k v t
-    = postKey k (postOptions { _cValue = v, _cTTL = Just t })
+    = postKey k (postOptions { _postValue = v, _postTTL = Just t })
   >>= fmap mkEph . hoistError
   where
     mkEph (_rsNode . _rsBody -> n) = EphemeralNode n (heartbeat n)
@@ -56,9 +56,9 @@ heartbeat = loop
   where
     loop n = do
         rs <- putKey (_nodeKey n)
-                     putOptions { _pTTL       = Just (SomeTTL (ttlOf n + 1))
-                                , _pRefresh   = True
-                                , _pPrevIndex = Just (_nodeModifiedIndex n)
+                     putOptions { _putTTL       = Just (SomeTTL (ttlOf n + 1))
+                                , _putRefresh   = True
+                                , _putPrevIndex = Just (_nodeModifiedIndex n)
                                 }
           >>= hoistError
         liftIO $ threadDelay (fromIntegral (ttlOf n) * 1000000)

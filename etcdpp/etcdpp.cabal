@@ -17,7 +17,7 @@ source-repository head
 
 library
   exposed-modules:
-    Control.Monad.Etcd.Class
+    Control.Monad.Etcd
     Control.Monad.Trans.Etcd
     Data.Etcd.Free
     Data.Etcd.Lens

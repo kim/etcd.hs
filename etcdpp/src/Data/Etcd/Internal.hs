@@ -21,6 +21,7 @@ gParsePrefixed = genericParseJSON defaultOptions
     }
 
 stripFieldPrefix :: String -> String
-stripFieldPrefix s = case dropWhile isLower s of
+stripFieldPrefix ('_':s) = stripFieldPrefix s
+stripFieldPrefix s       = case dropWhile isLower s of
     []     -> []
     (x:xs) -> toLower x : xs

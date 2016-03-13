@@ -22,11 +22,11 @@ where
 
 import Control.Concurrent.Async.Lifted
 import Control.Monad.Catch
-import Control.Monad.Etcd.Class
+import Control.Monad.Etcd              (MonadEtcd (..))
 import Control.Monad.Free.Class
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
-import Control.Monad.Trans.Free
+import Control.Monad.Trans.Etcd
 import Data.Etcd.Free
 import Data.Etcd.Recipes.Ephemeral
 import Data.Monoid
@@ -58,7 +58,7 @@ onLeader
        , MonadBaseControl IO m
        )
     => m a
-    -> Promotion (FreeT EtcdF m)
+    -> Promotion (EtcdT m)
     -> m a
 onLeader f (Promotion eph w)
     = race (liftEtcd (_ephHeartbeat eph)) (liftEtcd w *> f)
@@ -87,7 +87,7 @@ awaitPromotion (Nomination d eph) = return $ Promotion eph loop
     myKey = _nodeKey . _ephNode $ eph
 
     loop = do
-        ls <- getKey d getOptions { _gSorted = True, _gQuorum = True }
+        ls <- getKey d getOptions { _getSorted = True, _getQuorum = True }
           >>= fmap (_nodeNodes . _rsNode . _rsBody) . hoistError
 
         case span ((< myKey) . _nodeKey) ls of
@@ -100,7 +100,8 @@ awaitPromotion (Nomination d eph) = return $ Promotion eph loop
             (xs,_) -> watchPred (_nodeKey (last xs)) (_nodeModifiedIndex . _ephNode $ eph)
 
     watchPred p idx = do
-        rs <- watchKey p watchOptions { _wRecursive = False, _wWaitIndex = Just idx }
+        rs <- watchKey p watchOptions { _watchRecursive = False
+                                      , _watchWaitIndex = Just idx }
           >>= fmap _rsBody . hoistError
         case _rsAction rs of
             ActionExpire -> loop
