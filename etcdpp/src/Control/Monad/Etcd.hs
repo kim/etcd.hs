@@ -2,6 +2,9 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+
 module Control.Monad.Etcd
     ( MonadEtcd (..)
 
@@ -29,13 +32,12 @@ module Control.Monad.Etcd
 where
 
 import           Control.Monad.Trans.Etcd
-import qualified Data.Etcd.Free                  as EF
+import qualified Data.Etcd.Free           as EF
 import           Data.Etcd.Types
 
 
 class (Functor m, Applicative m, Monad m) => MonadEtcd m where
     liftEtcd :: EtcdT m a -> m a
-
 
 getKey :: MonadEtcd m => Key -> GetOptions -> m Response
 getKey k = liftEtcd . EF.getKey k

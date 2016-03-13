@@ -20,6 +20,10 @@ library
     Control.Monad.Etcd
     Control.Monad.Trans.Etcd
     Data.Etcd.Free
+    Data.Etcd.Free.Cluster
+    Data.Etcd.Free.Keyspace
+    Data.Etcd.Free.Misc
+    Data.Etcd.Free.Stats
     Data.Etcd.Lens
     Data.Etcd.Recipes.Barrier
     Data.Etcd.Recipes.DoubleBarrier

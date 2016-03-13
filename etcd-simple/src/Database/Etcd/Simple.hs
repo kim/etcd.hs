@@ -79,7 +79,7 @@ instance HasEnv Env where
 mkEnv :: MonadThrow m => String -> HTTP.Manager -> Log.Logger -> m Env
 mkEnv url mgr lgr = Env <$> HTTP.parseUrl url <*> pure mgr <*> pure lgr
 
--- | Contstruct an 'Env'ironment from just a URL of an etcd server
+-- | Contstruct an 'Env'ironment from just the URL of an etcd server
 mkEnv' :: (MonadIO m, MonadThrow m) => String -> m Env
 mkEnv' url = do
     mgr <- liftIO $ HTTP.newManager HTTP.defaultManagerSettings
@@ -92,108 +92,28 @@ runEtcd e = runEtcdT (interpret e)
 
 -- | An interpreter of the free monad over 'EtcdF'
 --
--- May throw 'HTTPException' if a transport error occurs or the server responds
--- with an unexpected status code. 'EtcdException' ('ClientError') will be
--- thrown if the server responds with invalid data (eg. because we're not
--- talking to an actual etcd server).
+-- May throw a 'HTTP.HTTPException' if a transport error occurs or the server
+-- responds with an unexpected status code. A 'ClientError' will be thrown if
+-- the server responds with invalid data (eg. because we're not talking to an
+-- actual etcd server).
 interpret :: (MonadIO m, MonadThrow m, HasEnv e) => e -> EtcdF (m a) -> m a
-interpret env f = debugRq env f *> go f
-  where
-    runHttp
-        :: ( MonadIO    m
-           , MonadThrow m
-           , Show a
-           )
-        => HTTP.Request
-        -> (HTTP.Response Lazy.ByteString -> Either String a)
-        -> m a
-    runHttp      rq g = http env rq  >>= throwInvalidResponse . g >>= debugRs
-    runHttpEmpty rq   = empty env rq >>= debugRs
+interpret env f = debugRq env f *> case f of
+    Keyspace g -> keyspaceI env g
+    Cluster  g -> clusterI  env g
+    Stats    g -> statsI    env g
+    Misc     g -> miscI     env g
 
-    baseRq = view baseRequest env
-
-    getKeyRq k ps
-        = rqMethod GET
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        . HTTP.setQueryString (toQuery ps)
-        $ baseRq
-
-    putKeyRq k ps
-        = rqMethod PUT
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ baseRq
-
-    postKeyRq k ps
-        = rqMethod POST
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
-        $ baseRq
-
-    delKeyRq k ps
-        = rqMethod DELETE
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        . HTTP.setQueryString (toQuery ps)
-        $ baseRq
-
-    watchKeyRq k ps
-        = rqMethod GET
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        . HTTP.setQueryString (toQuery ps)
-        $ baseRq
-
-    keyExistsRq k
-        = rqMethod HEAD
-        . rqPath (keysPath <> encodeUtf8 k)
-        . ignoreStatus
-        $ baseRq
-
-
-    listMembersRq
-        = rqMethod GET
-        . rqPath membersPath
-        $ baseRq
-
-    addMemberRq us
-        = rqMethod POST
-        . rqPath membersPath
-        . rqBdy (encode us)
-        $ baseRq
-
-    delMemberRq m
-        = rqMethod DELETE
-        . rqPath (membersPath <> encodeUtf8 m)
-        $ baseRq
-
-    updMemberRq m us
-        = rqMethod PUT
-        . rqPath (membersPath <> encodeUtf8 m)
-        . rqBdy (encode us)
-        $ baseRq
-
-    leaderStatsRq = rqMethod GET . rqPath (statsPath <> "leader") $ baseRq
-    selfStatsRq   = rqMethod GET . rqPath (statsPath <> "self")   $ baseRq
-    storeStatsRq  = rqMethod GET . rqPath (statsPath <> "store")  $ baseRq
-
-    versionRq = rqMethod GET . rqPath versionPath $ baseRq
-    healthRq  = rqMethod GET . rqPath healthPath  $ baseRq
-
-    go (GetKey    k ps next) = runHttp (getKeyRq  k ps) keyspaceRs >>= next
-    go (PutKey    k ps next) = runHttp (putKeyRq  k ps) keyspaceRs >>= next
-    go (PostKey   k ps next) = runHttp (postKeyRq k ps) keyspaceRs >>= next
-    go (DeleteKey k ps next) = runHttp (delKeyRq  k ps) keyspaceRs >>= next
-    go (WatchKey  k ps next)
-        = runHttp (watchKeyRq k ps) Right
-      >>= \case rs | emptyResponse rs -> go (WatchKey k ps next)
+keyspaceI :: (MonadIO m, MonadThrow m, HasEnv e) => e -> KeyspaceF (m a) -> m a
+keyspaceI env = \case
+    GetKey    k ps next -> runHttp env (getKeyRq  k ps) keyspaceRs >>= next
+    PutKey    k ps next -> runHttp env (putKeyRq  k ps) keyspaceRs >>= next
+    PostKey   k ps next -> runHttp env (postKeyRq k ps) keyspaceRs >>= next
+    DeleteKey k ps next -> runHttp env (delKeyRq  k ps) keyspaceRs >>= next
+    WatchKey  k ps next -> runHttp env (watchKeyRq k ps) Right
+      >>= \case rs | emptyResponse rs -> keyspaceI env (WatchKey k ps next)
                    | otherwise        -> throwInvalidResponse (keyspaceRs rs)
                                      >>= next
-    go (KeyExists k next)
-        = runHttpEmpty (keyExistsRq k)
+    KeyExists k next    -> runHttpEmpty env (keyExistsRq k)
       >>= \rs -> case statusCode (HTTP.responseStatus rs) of
                      200 -> next True
                      404 -> next False
@@ -201,18 +121,47 @@ interpret env f = debugRq env f *> go f
                                  (HTTP.responseStatus    rs)
                                  (HTTP.responseHeaders   rs)
                                  (HTTP.responseCookieJar rs)
+  where
+    getKeyRq k ps
+        = rqMethod GET
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ view baseRequest env
 
-    go (ListMembers       next) = runHttp listMembersRq    jsonRs >>= next
-    go (AddMember      us next) = runHttp (addMemberRq us) jsonRs >>= next
-    go (DeleteMember m    next) = runHttpEmpty (delMemberRq m)    >> next
-    go (UpdateMember m us next) = runHttpEmpty (updMemberRq m us) >> next
+    putKeyRq k ps
+        = rqMethod PUT
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+        $ view baseRequest env
 
-    go (GetLeaderStats next) = runHttp leaderStatsRq jsonRs >>= next
-    go (GetSelfStats   next) = runHttp selfStatsRq   jsonRs >>= next
-    go (GetStoreStats  next) = runHttp storeStatsRq  jsonRs >>= next
+    postKeyRq k ps
+        = rqMethod POST
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        . HTTP.urlEncodedBody (mapMaybe (bitraverse Just id) (toQuery ps))
+        $ view baseRequest env
 
-    go (GetVersion next) = runHttp versionRq jsonRs >>= next
-    go (GetHealth  next) = runHttp healthRq  jsonRs >>= next
+    delKeyRq k ps
+        = rqMethod DELETE
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ view baseRequest env
+
+    watchKeyRq k ps
+        = rqMethod GET
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        . HTTP.setQueryString (toQuery ps)
+        $ view baseRequest env
+
+    keyExistsRq k
+        = rqMethod HEAD
+        . rqPath (keysPath <> encodeUtf8 k)
+        . ignoreStatus
+        $ view baseRequest env
 
     -- A long-polling watch may be terminated by the server (or due to network
     -- failure) at any time. Since the response headers are sent immediately, we
@@ -227,19 +176,68 @@ interpret env f = debugRq env f *> go f
             if statusIsServerError s then checkStatus rq s h c else Nothing
         }
 
-    debugRs :: (Show a, MonadIO m) => a -> m a
-    debugRs a = do
-        tid <- liftIO myThreadId
-        Log.debug (view logger env) $
-            Log.field "thread" (show tid) . Log.field "response" (show a)
-        return a
+clusterI :: (MonadIO m, MonadThrow m, HasEnv e) => e -> ClusterF (m a) -> m a
+clusterI env = \case
+    ListMembers       next -> runHttp env listMembersRq    jsonRs >>= next
+    AddMember      us next -> runHttp env (addMemberRq us) jsonRs >>= next
+    DeleteMember m    next -> runHttpEmpty env (delMemberRq m)    >> next
+    UpdateMember m us next -> runHttpEmpty env (updMemberRq m us) >> next
+ where
+    listMembersRq
+        = rqMethod GET
+        . rqPath membersPath
+        $ view baseRequest env
+
+    addMemberRq us
+        = rqMethod POST
+        . rqPath membersPath
+        . rqBdy (encode us)
+        $ view baseRequest env
+
+    delMemberRq m
+        = rqMethod DELETE
+        . rqPath (membersPath <> encodeUtf8 m)
+        $ view baseRequest env
+
+    updMemberRq m us
+        = rqMethod PUT
+        . rqPath (membersPath <> encodeUtf8 m)
+        . rqBdy (encode us)
+        $ view baseRequest env
+
+statsI :: (MonadIO m, MonadThrow m, HasEnv e) => e -> StatsF (m a) -> m a
+statsI env = \case
+    GetLeaderStats next -> runHttp env leaderStatsRq jsonRs >>= next
+    GetSelfStats   next -> runHttp env selfStatsRq   jsonRs >>= next
+    GetStoreStats  next -> runHttp env storeStatsRq  jsonRs >>= next
+  where
+    leaderStatsRq = rqMethod GET . rqPath (statsPath <> "leader") $ view baseRequest env
+    selfStatsRq   = rqMethod GET . rqPath (statsPath <> "self")   $ view baseRequest env
+    storeStatsRq  = rqMethod GET . rqPath (statsPath <> "store")  $ view baseRequest env
+
+miscI :: (MonadIO m, MonadThrow m, HasEnv e) => e -> MiscF (m a) -> m a
+miscI env = \case
+    GetVersion next -> runHttp env versionRq jsonRs >>= next
+    GetHealth  next -> runHttp env healthRq  jsonRs >>= next
+  where
+    versionRq = rqMethod GET . rqPath versionPath $ view baseRequest env
+    healthRq  = rqMethod GET . rqPath healthPath  $ view baseRequest env
 
 
-empty :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response ())
-empty env rq = runRq env rq HTTP.httpNoBody
+runHttp
+    :: ( MonadIO    m
+       , MonadThrow m
+       , Show a
+       , HasEnv e
+       )
+    => e
+    -> HTTP.Request
+    -> (HTTP.Response Lazy.ByteString -> Either String a)
+    -> m a
+runHttp env rq g = runRq env rq HTTP.httpLbs >>= throwInvalidResponse . g >>= debugRs env
 
-http :: (MonadIO m, HasEnv e) => e -> Request -> m (HTTP.Response Lazy.ByteString)
-http env rq = runRq env rq HTTP.httpLbs
+runHttpEmpty :: (MonadIO m, HasEnv e) => e -> HTTP.Request -> m (HTTP.Response ())
+runHttpEmpty env rq = runRq env rq HTTP.httpNoBody >>= debugRs env
 
 runRq :: (MonadIO m, HasEnv e, Show a)
       => e
@@ -311,23 +309,24 @@ debugRq env f = do
     let lgr = view logger env
     tid <- liftIO myThreadId
     Log.debug lgr $ Log.field "thread" (show tid) . case f of
-        GetKey    k ps _ -> cmd "GetKey"    . key' k . params ps
-        PutKey    k ps _ -> cmd "PutKey"    . key' k . params ps
-        PostKey   k ps _ -> cmd "PostKey"   . key' k . params ps
-        DeleteKey k ps _ -> cmd "DeleteKey" . key' k . params ps
-        WatchKey  k ps _ -> cmd "WatchKey"  . key' k . params ps
-        KeyExists k    _ -> cmd "KeyExists" . key' k
+        Keyspace (GetKey    k ps _) -> cmd "GetKey"    . key' k . params ps
+        Keyspace (PutKey    k ps _) -> cmd "PutKey"    . key' k . params ps
+        Keyspace (PostKey   k ps _) -> cmd "PostKey"   . key' k . params ps
+        Keyspace (DeleteKey k ps _) -> cmd "DeleteKey" . key' k . params ps
+        Keyspace (WatchKey  k ps _) -> cmd "WatchKey"  . key' k . params ps
+        Keyspace (KeyExists k    _) -> cmd "KeyExists" . key' k
 
-        ListMembers       _ -> cmd "ListMembers"
-        AddMember   us    _ -> cmd "AddMember"    . purls us
-        DeleteMember m    _ -> cmd "DeleteMember" . membr m
-        UpdateMember m us _ -> cmd "UpdateMember" . membr m . purls us
+        Cluster (ListMembers       _) -> cmd "ListMembers"
+        Cluster (AddMember   us    _) -> cmd "AddMember"    . purls us
+        Cluster (DeleteMember m    _) -> cmd "DeleteMember" . membr m
+        Cluster (UpdateMember m us _) -> cmd "UpdateMember" . membr m . purls us
 
-        GetLeaderStats _ -> cmd "GetLeaderStats"
-        GetSelfStats   _ -> cmd "GetSelfStats"
-        GetStoreStats  _ -> cmd "GetStoreStats"
-        GetVersion     _ -> cmd "GetVersion"
-        GetHealth      _ -> cmd "GetHealth"
+        Stats (GetLeaderStats _) -> cmd "GetLeaderStats"
+        Stats (GetSelfStats   _) -> cmd "GetSelfStats"
+        Stats (GetStoreStats  _) -> cmd "GetStoreStats"
+
+        Misc (GetVersion _) -> cmd "GetVersion"
+        Misc (GetHealth  _) -> cmd "GetHealth"
   where
     cmd :: Strict.ByteString -> (Log.Msg -> Log.Msg)
     cmd = Log.field "command"
@@ -345,3 +344,11 @@ debugRq env f = do
         . peerURLs
 
     membr = Log.field "member"
+
+debugRs :: (Show a, MonadIO m, HasEnv e) => e -> a -> m a
+debugRs env a = do
+    tid <- liftIO myThreadId
+    Log.debug (view logger env) $
+        Log.field "thread" (show tid) . Log.field "response" (show a)
+    return a
+
