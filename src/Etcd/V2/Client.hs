@@ -125,7 +125,7 @@ getKey k GetOptions { _getRecursive = recursive
                     , _getSorted    = sorted
                     , _getQuorum    = quorum
                     }
-    = get k (may recursive) (may sorted) (may quorum) (Just False) Nothing
+    = get k (may recursive) (may sorted) (may quorum) Nothing Nothing
 
 putKey :: Key -> PutOptions -> Endpoint KeyspaceResponse
 putKey k PutOptions { _putValue     = value
@@ -185,4 +185,4 @@ leaderStats :<|> selfStats :<|> storeStats = client statsAPI
 --------------------------------------------------------------------------------
 
 may :: Bool -> Maybe Bool
-may = bool (Just True) Nothing
+may = bool Nothing (Just True)
