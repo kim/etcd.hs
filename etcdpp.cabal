@@ -1,13 +1,14 @@
-name:                etcd-simple
+name:                etcdpp
 version:             0.1.0.0
-synopsis:            A simple `etcd` client
+synopsis:            etcd Client (API v2)
+description:         See README.md
 homepage:            https://github.com/kim/etcdpp
 bug-reports:         https://github.com/kim/etcdpp/issues
 license:             MPL-2.0
 license-file:        LICENSE
 author:              Kim Altintop
 maintainer:          kim.altintop@gmail.com
-category:            Database
+category:            Data
 build-type:          Simple
 cabal-version:       >=1.10
 
@@ -17,27 +18,23 @@ source-repository head
 
 library
   exposed-modules:
-    Database.Etcd.Simple
+    Etcd.V2.API
+    Etcd.V2.Client
 
   build-depends:
       aeson                 (>= 0.8 && < 0.10) || > 0.10
-    , base                  >= 4.8 && < 5
-    , bifunctors
-    , bytestring
-    , bytestring-conversion
-    , etcdpp
+    , base                  >= 4.8 && < 4.9
     , exceptions
-    , free
     , http-client
-    , http-types
-    , lens
+    , servant
+    , servant-client
     , text
-    , tinylog
+    , time
     , transformers
+    , unordered-containers
 
   ghc-options:
     -Wall
-    -O
     -fwarn-tabs
     -funbox-small-strict-fields
 
