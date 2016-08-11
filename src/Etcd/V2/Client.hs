@@ -29,14 +29,20 @@ module Etcd.V2.Client
     , leaderStats
     , selfStats
     , storeStats
+
+      -- * Re-exports
+    , runExceptT
+    , newManager, defaultManagerSettings
+    , BaseUrl (..)
     )
 where
 
+import Control.Monad.Except (runExceptT)
 import Data.Bool
-import Data.Text           (Text)
+import Data.Text            (Text)
 import Data.Word
 import Etcd.V2.API
-import Network.HTTP.Client (Manager)
+import Network.HTTP.Client  (Manager, newManager, defaultManagerSettings)
 import Servant.API
 import Servant.Client
 

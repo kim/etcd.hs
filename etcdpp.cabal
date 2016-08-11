@@ -26,6 +26,7 @@ library
     , base                  >= 4.8 && < 4.9
     , exceptions
     , http-client
+    , mtl
     , servant
     , servant-client
     , text
