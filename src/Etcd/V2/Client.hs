@@ -32,8 +32,9 @@ module Etcd.V2.Client
 
       -- * Re-exports
     , runExceptT
-    , newManager, defaultManagerSettings
+    , Manager, newManager, defaultManagerSettings
     , BaseUrl (..)
+    , Headers (..)
     )
 where
 
