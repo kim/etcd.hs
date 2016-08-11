@@ -112,12 +112,6 @@ instance FromJSON Node where
              <*> o .:? "expiration"
              <*> o .:? "ttl"
 
-data Response = Err ErrorResponse | Succ SuccessResponse
-    deriving (Eq, Show)
-
-instance FromJSON Response where
-    parseJSON v = (Err <$> parseJSON v) <|> (Succ <$> parseJSON v)
-
 -- | As defined in ${ETCD}/store/event.go
 data Action
     = ActionGet
@@ -136,6 +130,9 @@ instance FromJSON Action where
         , constructorTagModifier = stripFieldPrefix . drop 1
         }
 
+
+type Response = SuccessResponse
+
 data SuccessResponse = SuccessResponse
     { _rsAction   :: !Action
     , _rsNode     :: !Node
@@ -144,6 +141,7 @@ data SuccessResponse = SuccessResponse
 
 instance FromJSON SuccessResponse where parseJSON = gParsePrefixed
 
+-- | _Some_ error responses contain a response body like this.
 data ErrorResponse = ErrorResponse
     { _rsErrorCode :: !Word16
     , _rsMessage   :: !Text
