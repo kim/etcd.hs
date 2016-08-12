@@ -1,81 +1,70 @@
-{-# LANGUAGE DataKinds         #-}
+-- This Source Code Form is subject to the terms of the Mozilla Public
+-- License, v. 2.0. If a copy of the MPL was not distributed with this
+-- file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeOperators     #-}
 
-module Etcd.V2.API where
+module Etcd.V2.Types where
 
-import           Control.Applicative
-import qualified Data.Aeson          as Aeson
-import           Data.Aeson.Types    hiding (Value)
+import           Control.Exception
+import qualified Data.Aeson           as Aeson (Value)
+import           Data.Aeson.Types     hiding (Value)
+import qualified Data.ByteString.Lazy as Lazy (ByteString)
 import           Data.Char
-import           Data.HashMap.Strict (HashMap)
-import           Data.Proxy
-import           Data.Text           (Text)
-import qualified Data.Text           as Text
-import           Data.Time           (UTCTime)
+import           Data.HashMap.Strict  (HashMap)
+import           Data.Text            (Text)
+import qualified Data.Text            as Text (empty)
+import           Data.Time            (UTCTime)
+import           Data.Typeable
 import           Data.Word
 import           GHC.Generics
-import           Servant.API
+import           Network.HTTP.Client  (Manager)
+import qualified Network.HTTP.Types   as HTTP (Status)
+import           Servant.API          (ToHttpApiData (..))
+import           Servant.Client       (BaseUrl)
 
 
-type Versioned = "v2"
-
-type PutCreated = Verb 'PUT  201
-type Head       = Verb 'HEAD 200
-
-type EtcdAPI = KeyspaceAPI :<|> MembersAPI :<|> AdminAPI :<|> StatsAPI
-
-etcdAPI :: Proxy EtcdAPI
-etcdAPI = Proxy
+data Env = Env
+    { _envManager :: !Manager
+    , _envBaseUrl :: !BaseUrl
+    }
 
 --------------------------------------------------------------------------------
--- Keyspace API (aka Client API)
+-- Errors
 --------------------------------------------------------------------------------
 
-type KeyspaceResponseHeaders
-    = Headers '[ Header "X-Etcd-Cluster-ID" Text
-               , Header "X-Etcd-Index"      Word64
-               , Header "X-Raft-Index"      Word64
-               , Header "X-Raft-Term"       Word64
-               ]
+data EtcdError
+    = EtcdError
+        { etcdErrorResponse :: ErrorResponse }
+    | HttpError
+        { responseStatus :: HTTP.Status
+        , responseBody   :: Lazy.ByteString
+        }
+    | DecodeError
+        { decodeError  :: String
+        , responseBody :: Lazy.ByteString
+        }
+    | TransportError
+        { transportError :: SomeException }
+    | UnexpectedError
+        { unexpectedError :: SomeException }
+    deriving (Show, Typeable)
 
-type KeyspaceResponse = KeyspaceResponseHeaders Response
+instance Eq EtcdError where
+    EtcdError      a   == EtcdError      x   = a == x
+    HttpError      a b == HttpError      x y = (a, b) == (x, y)
+    DecodeError    a b == DecodeError    x y = (a, b) == (x, y)
+    TransportError a   == TransportError x   = show a == show x
+    _ == _ = False
 
-type KeyspaceAPI = Versioned :> "keys" :>
-    (     Capture    "key"       Text
-       :> QueryParam "value"     Value
-       :> QueryParam "ttl"       SetTTL
-       :> QueryParam "prevValue" Value
-       :> QueryParam "prevIndex" Word64
-       :> QueryParam "prevExist" Bool
-       :> QueryParam "refresh"   Bool
-       :> QueryParam "dir"       Bool
-       :> PutCreated '[JSON] KeyspaceResponse
-  :<|>    Capture    "key"       Text
-       :> QueryParam "value"     Value
-       :> QueryParam "ttl"       TTL
-       :> PostCreated '[JSON] KeyspaceResponse
-  :<|>    Capture    "key"       Text
-       :> QueryParam "recursive" Bool
-       :> QueryParam "sorted"    Bool
-       :> QueryParam "quorum"    Bool
-       :> QueryParam "wait"      Bool
-       :> QueryParam "waitIndex" Word64
-       :> Get '[JSON] KeyspaceResponse
-  :<|>    Capture    "key"       Text
-       :> QueryParam "recursive" Bool
-       :> QueryParam "prevValue" Value
-       :> QueryParam "prevIndex" Word64
-       :> QueryParam "dir"       Bool
-       :> Delete '[JSON] KeyspaceResponse
-  :<|>    Capture    "key"       Text
-       :> Head '[JSON] (KeyspaceResponseHeaders NoContent)
-    )
+instance Exception EtcdError
 
-keyspaceAPI :: Proxy KeyspaceAPI
-keyspaceAPI = Proxy
+
+--------------------------------------------------------------------------------
+-- Keyspace API
+--------------------------------------------------------------------------------
 
 type Key   = Text
 type Value = Text
@@ -131,15 +120,15 @@ instance FromJSON Action where
         }
 
 
-type Response = SuccessResponse
+type SuccessResponse = Response
 
-data SuccessResponse = SuccessResponse
+data Response = Response
     { _rsAction   :: !Action
     , _rsNode     :: !Node
     , _rsPrevNode :: Maybe Node
     } deriving (Eq, Show, Generic)
 
-instance FromJSON SuccessResponse where parseJSON = gParsePrefixed
+instance FromJSON Response where parseJSON = gParsePrefixed
 
 -- | _Some_ error responses contain a response body like this.
 data ErrorResponse = ErrorResponse
@@ -151,20 +140,92 @@ data ErrorResponse = ErrorResponse
 
 instance FromJSON ErrorResponse where parseJSON = gParsePrefixed
 
+data ResponseHeaders = ResponseHeaders
+    { _rsEtcdClusterID :: !Text
+    , _rsEtcdIndex     :: !Word64
+    , _rsRaftIndex     :: !Word64
+    , _rsRaftTerm      :: !Word64
+    } deriving (Eq, Show)
+
+data ResponseAndMetadata = ResponseAndMetadata
+    { _rsResponse :: !Response
+    , _rsMetadata :: Maybe ResponseHeaders
+    } deriving (Eq, Show)
+
+data GetOptions = GetOptions
+    { _getRecursive :: !Bool
+    , _getSorted    :: !Bool
+    , _getQuorum    :: !Bool
+    } deriving Show
+
+getOptions :: GetOptions
+getOptions = GetOptions
+    { _getRecursive = False
+    , _getSorted    = False
+    , _getQuorum    = False
+    }
+
+data PutOptions = PutOptions
+    { _putValue     :: Maybe Text
+    , _putTTL       :: Maybe SetTTL
+    , _putPrevValue :: Maybe Text
+    , _putPrevIndex :: Maybe Word64
+    , _putPrevExist :: Maybe Bool -- ^ 'Nothing' = don't care
+    , _putRefresh   :: !Bool
+    , _putDir       :: !Bool
+    } deriving Show
+
+putOptions :: PutOptions
+putOptions = PutOptions
+    { _putValue     = Nothing
+    , _putTTL       = Nothing
+    , _putPrevValue = Nothing
+    , _putPrevIndex = Nothing
+    , _putPrevExist = Nothing
+    , _putRefresh   = False
+    , _putDir       = False
+    }
+
+data PostOptions = PostOptions
+    { _postValue :: Maybe Text
+    , _postTTL   :: Maybe TTL
+    } deriving Show
+
+postOptions :: PostOptions
+postOptions = PostOptions
+    { _postValue = Nothing
+    , _postTTL   = Nothing
+    }
+
+data DeleteOptions = DeleteOptions
+    { _delRecursive :: !Bool
+    , _delPrevValue :: Maybe Text
+    , _delPrevIndex :: Maybe Word64
+    , _delDir       :: !Bool
+    } deriving Show
+
+deleteOptions :: DeleteOptions
+deleteOptions = DeleteOptions
+    { _delRecursive = False
+    , _delPrevValue = Nothing
+    , _delPrevIndex = Nothing
+    , _delDir       = False
+    }
+
+data WatchOptions = WatchOptions
+    { _watchRecursive :: !Bool
+    , _watchWaitIndex :: Maybe Word64
+    } deriving Show
+
+watchOptions :: WatchOptions
+watchOptions = WatchOptions
+    { _watchRecursive = False
+    , _watchWaitIndex = Nothing
+    }
 
 --------------------------------------------------------------------------------
 -- Members API
 --------------------------------------------------------------------------------
-
-type MembersAPI = Versioned :> "members" :>
-    (  Get '[JSON] Members
-  :<|> ReqBody '[JSON] PeerURLs :> PostCreated '[JSON] Member
-  :<|> Capture "id" Text :> DeleteNoContent '[JSON] NoContent
-  :<|> Capture "id" Text :> ReqBody '[JSON] PeerURLs :> PutNoContent '[JSON] NoContent
-    )
-
-membersAPI :: Proxy MembersAPI
-membersAPI = Proxy
 
 newtype Members = Members { members :: [Member] }
     deriving (Show, Generic)
@@ -210,16 +271,9 @@ instance ToJSON   PeerURLs
 -- Admin API
 --------------------------------------------------------------------------------
 
-type AdminAPI
-     = "version" :> Get '[JSON] Version
-  :<|> "health"  :> Get '[JSON] Health
-
-adminAPI :: Proxy AdminAPI
-adminAPI = Proxy
-
 data Version = Version
-    { etcdcluster :: !Text
-    , etcdversion :: !Text
+    { etcdserver  :: !Text
+    , etcdcluster :: !Text
     } deriving (Show, Generic)
 
 instance FromJSON Version
@@ -227,21 +281,13 @@ instance FromJSON Version
 newtype Health = Health { health :: Bool }
     deriving (Show, Generic)
 
-instance FromJSON Health
-
-
---------------------------------------------------------------------------------
--- Stats API
---------------------------------------------------------------------------------
-
-type StatsAPI = Versioned :> "stats" :>
-    (  "leader" :> Get '[JSON] LeaderStats
-  :<|> "self"   :> Get '[JSON] SelfStats
-  :<|> "store"  :> Get '[JSON] StoreStats
-    )
-
-statsAPI :: Proxy StatsAPI
-statsAPI = Proxy
+instance FromJSON Health where
+    parseJSON = withObject "Health" $ \obj -> do
+        val <- obj .: "health"
+        case val of
+            "true"  -> pure $ Health True
+            "false" -> pure $ Health False
+            _       -> typeMismatch "Unkown `Health` value" (String val)
 
 data LeaderStats = LeaderStats
     { _lsLeader    :: !Text
@@ -250,6 +296,10 @@ data LeaderStats = LeaderStats
 
 instance FromJSON LeaderStats where parseJSON = gParsePrefixed
 
+
+--------------------------------------------------------------------------------
+-- Stats API
+--------------------------------------------------------------------------------
 
 data FollowerStats = FollowerStats
     { _fsCounts  :: !FollowerCounts

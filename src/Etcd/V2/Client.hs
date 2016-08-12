@@ -1,13 +1,19 @@
-{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
+-- This Source Code Form is subject to the terms of the Mozilla Public
+-- License, v. 2.0. If a copy of the MPL was not distributed with this
+-- file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module Etcd.V2.Client
-    ( -- * Keyspace API
-      GetOptions    (..), getOptions
-    , PutOptions    (..), putOptions
-    , PostOptions   (..), postOptions
-    , DeleteOptions (..), deleteOptions
-    , WatchOptions  (..), watchOptions
+    ( EtcdM
 
+    , newEtcdEnv
+    , runEtcdM
+
+      -- * Keyspace API
     , getKey
     , putKey
     , postKey
@@ -31,165 +37,146 @@ module Etcd.V2.Client
     , storeStats
 
       -- * Re-exports
-    , runExceptT
-    , Manager, newManager, defaultManagerSettings
-    , BaseUrl (..)
-    , Headers (..)
+    , module Etcd.V2.Types
     )
 where
 
-import Control.Monad.Except (runExceptT)
-import Data.Bool
-import Data.Text            (Text)
-import Data.Word
-import Etcd.V2.API
-import Network.HTTP.Client  (Manager, newManager, defaultManagerSettings)
-import Servant.API
-import Servant.Client
+import           Control.Exception
+import           Control.Monad.Reader
+import           Control.Monad.Trans.Except
+import           Data.Aeson                 (eitherDecode)
+import qualified Data.ByteString.Lazy       as BS
+import           Data.Text                  (Text)
+import qualified Etcd.V2.Internal.API       as API
+import           Etcd.V2.Types
+import           Network.HTTP.Client
+import           Network.HTTP.Types.Status  (Status (..))
+import           Servant.API
+import           Servant.Client
 
 
-type Endpoint a = Manager -> BaseUrl -> ClientM a
+type EtcdM = ReaderT Env (ExceptT EtcdError IO)
+
+-- | Construct a new environment from a URL string.
+--
+-- The 'Env' can be modified using the lenses provided in 'Etcd.V2.Lens', eg. to
+-- supply your own 'Network.HTTP.Client.Manager'.
+--
+newEtcdEnv :: String -> IO Env
+newEtcdEnv url = Env <$> newManager defaultManagerSettings <*> parseBaseUrl url
+
+runEtcdM :: Env -> EtcdM a -> IO (Either EtcdError a)
+runEtcdM e f = runExceptT $ runReaderT f e
+
 
 --------------------------------------------------------------------------------
--- Keyspace API (aka Client API)
+-- Keyspace API
 --------------------------------------------------------------------------------
 
-data GetOptions = GetOptions
-    { _getRecursive :: !Bool
-    , _getSorted    :: !Bool
-    , _getQuorum    :: !Bool
-    } deriving Show
+getKey :: Key -> GetOptions -> EtcdM ResponseAndMetadata
+getKey k = keyspace . API.getKey k
 
-getOptions :: GetOptions
-getOptions = GetOptions
-    { _getRecursive = False
-    , _getSorted    = False
-    , _getQuorum    = False
-    }
+putKey :: Key -> PutOptions -> EtcdM ResponseAndMetadata
+putKey k = keyspace . API.putKey k
 
-data PutOptions = PutOptions
-    { _putValue     :: Maybe Text
-    , _putTTL       :: Maybe SetTTL
-    , _putPrevValue :: Maybe Text
-    , _putPrevIndex :: Maybe Word64
-    , _putPrevExist :: Maybe Bool -- ^ 'Nothing' = don't care
-    , _putRefresh   :: !Bool
-    , _putDir       :: !Bool
-    } deriving Show
+postKey :: Key -> PostOptions -> EtcdM ResponseAndMetadata
+postKey k = keyspace . API.postKey k
 
-putOptions :: PutOptions
-putOptions = PutOptions
-    { _putValue     = Nothing
-    , _putTTL       = Nothing
-    , _putPrevValue = Nothing
-    , _putPrevIndex = Nothing
-    , _putPrevExist = Nothing
-    , _putRefresh   = False
-    , _putDir       = False
-    }
+deleteKey :: Key -> DeleteOptions -> EtcdM ResponseAndMetadata
+deleteKey k = keyspace . API.deleteKey k
 
-data PostOptions = PostOptions
-    { _postValue :: Maybe Text
-    , _postTTL   :: Maybe TTL
-    } deriving Show
+keyExists :: Key -> EtcdM Bool
+keyExists k = call $ \mgr url ->
+    (const True <$> API.keyExists k mgr url) `catchE` notFound
+  where
+    notFound (FailureResponse (Status 404 _) _ _) = pure False
+    notFound e                                    = throwE e
 
-postOptions :: PostOptions
-postOptions = PostOptions
-    { _postValue = Nothing
-    , _postTTL   = Nothing
-    }
+watchKey :: Key -> WatchOptions -> EtcdM ResponseAndMetadata
+watchKey k = keyspace . API.watchKey k
 
-data DeleteOptions = DeleteOptions
-    { _delRecursive :: !Bool
-    , _delPrevValue :: Maybe Text
-    , _delPrevIndex :: Maybe Word64
-    , _delDir       :: !Bool
-    } deriving Show
-
-deleteOptions :: DeleteOptions
-deleteOptions = DeleteOptions
-    { _delRecursive = False
-    , _delPrevValue = Nothing
-    , _delPrevIndex = Nothing
-    , _delDir       = False
-    }
-
-data WatchOptions = WatchOptions
-    { _watchRecursive :: !Bool
-    , _watchWaitIndex :: Maybe Word64
-    } deriving Show
-
-watchOptions :: WatchOptions
-watchOptions = WatchOptions
-    { _watchRecursive = False
-    , _watchWaitIndex = Nothing
-    }
-
-put :<|> post :<|> get :<|> delete :<|> head' = client keyspaceAPI
-
-getKey :: Key -> GetOptions -> Endpoint KeyspaceResponse
-getKey k GetOptions { _getRecursive = recursive
-                    , _getSorted    = sorted
-                    , _getQuorum    = quorum
-                    }
-    = get k (may recursive) (may sorted) (may quorum) Nothing Nothing
-
-putKey :: Key -> PutOptions -> Endpoint KeyspaceResponse
-putKey k PutOptions { _putValue     = value
-                    , _putTTL       = ttl
-                    , _putPrevValue = prevValue
-                    , _putPrevIndex = prevIndex
-                    , _putPrevExist = prevExist
-                    , _putRefresh   = refresh
-                    , _putDir       = dir
-                    }
-    = put k value ttl prevValue prevIndex prevExist (may refresh) (may dir)
-
-postKey :: Key -> PostOptions -> Endpoint KeyspaceResponse
-postKey k PostOptions { _postValue = value, _postTTL = ttl }
-    = post k value ttl
-
-deleteKey :: Key -> DeleteOptions -> Endpoint KeyspaceResponse
-deleteKey k DeleteOptions { _delRecursive = recursive
-                          , _delPrevValue = prevValue
-                          , _delPrevIndex = prevIndex
-                          , _delDir       = dir
-                          }
-    = delete k (may recursive) prevValue prevIndex (may dir)
-
-keyExists :: Key -> Endpoint (KeyspaceResponseHeaders NoContent)
-keyExists = head'
-
-watchKey :: Key -> WatchOptions -> Endpoint KeyspaceResponse
-watchKey k opts
-    = get k
-          (may (_watchRecursive opts))
-          (Just False)
-          (Just False)
-          (Just True)
-          (_watchWaitIndex opts)
 
 --------------------------------------------------------------------------------
 -- Members API
 --------------------------------------------------------------------------------
 
-listMembers :<|> addMembers :<|> deleteMember :<|> updateMember = client membersAPI
+listMembers :: EtcdM Members
+listMembers = call API.listMembers
+
+addMembers :: PeerURLs -> EtcdM Member
+addMembers = call . API.addMembers
+
+deleteMember :: Text -> EtcdM NoContent
+deleteMember = call . API.deleteMember
+
+updateMember :: Text -> PeerURLs -> EtcdM NoContent
+updateMember mid = call . API.updateMember mid
+
 
 --------------------------------------------------------------------------------
 -- Admin API
 --------------------------------------------------------------------------------
 
-getVersion :<|> getHealth = client adminAPI
+getVersion :: EtcdM Version
+getVersion = call API.getVersion
+
+getHealth :: EtcdM Health
+getHealth = call API.getHealth
+
 
 --------------------------------------------------------------------------------
 -- Stats API
 --------------------------------------------------------------------------------
 
-leaderStats :<|> selfStats :<|> storeStats = client statsAPI
+leaderStats :: EtcdM LeaderStats
+leaderStats = call API.leaderStats
+
+selfStats :: EtcdM SelfStats
+selfStats = call API.selfStats
+
+storeStats :: EtcdM StoreStats
+storeStats = call API.storeStats
 
 --------------------------------------------------------------------------------
 -- Internal
 --------------------------------------------------------------------------------
 
-may :: Bool -> Maybe Bool
-may = bool Nothing (Just True)
+keyspace
+    :: (Manager -> BaseUrl -> ClientM API.KeyspaceResponse)
+    -> EtcdM ResponseAndMetadata
+keyspace f = call $ \mgr url -> do
+    rs <- f mgr url
+    return $ responseAndMetadata rs
+
+responseAndMetadata :: API.KeyspaceResponse -> ResponseAndMetadata
+responseAndMetadata rs = ResponseAndMetadata
+    { _rsResponse = getResponse rs
+    , _rsMetadata = meta (getHeadersHList rs)
+    }
+
+meta :: HList API.KeyspaceResponseHeaders -> Maybe ResponseHeaders
+meta (HCons (Header clusterID)
+            (HCons (Header etcdIndex)
+                   (HCons (Header raftIndex)
+                          (HCons (Header raftTerm) HNil))))
+  = Just ResponseHeaders
+      { _rsEtcdClusterID = clusterID
+      , _rsEtcdIndex     = etcdIndex
+      , _rsRaftIndex     = raftIndex
+      , _rsRaftTerm      = raftTerm
+      }
+meta _ = Nothing
+
+call :: (Manager -> BaseUrl -> ClientM a) -> EtcdM a
+call f = do
+    Env mgr url <- ask
+    lift . withExceptT mapErrors $
+        f mgr url
+  where
+    mapErrors (FailureResponse status _ body)
+      | BS.null body = HttpError status body
+      | otherwise    = either (`DecodeError` body) EtcdError $ eitherDecode body
+
+    mapErrors (DecodeFailure err _ body) = DecodeError err body
+    mapErrors (ConnectionError ex)       = TransportError ex
+    mapErrors unexpected                 = UnexpectedError (SomeException unexpected)

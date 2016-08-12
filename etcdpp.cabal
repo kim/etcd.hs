@@ -18,14 +18,18 @@ source-repository head
 
 library
   exposed-modules:
-    Etcd.V2.API
     Etcd.V2.Client
+    Etcd.V2.Internal.API
+    Etcd.V2.Lens
+    Etcd.V2.Types
 
   build-depends:
       aeson                 (>= 0.8 && < 0.10) || > 0.10
     , base                  >= 4.8 && < 4.9
-    , exceptions
+    , bytestring
     , http-client
+    , http-types
+    , lens
     , mtl
     , servant
     , servant-client
