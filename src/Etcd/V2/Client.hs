@@ -8,7 +8,8 @@
 {-# LANGUAGE OverloadedStrings     #-}
 
 module Etcd.V2.Client
-    ( EtcdM
+    ( EtcdT
+    , EtcdM
 
     , newEtcdEnv
     , runEtcdM
@@ -58,7 +59,8 @@ import           Servant.API
 import           Servant.Client
 
 
-type EtcdM e = ReaderT e (ExceptT EtcdError IO)
+type EtcdT e m = ReaderT e (ExceptT EtcdError m)
+type EtcdM e   = EtcdT e IO
 
 -- | Construct a new environment from a URL string.
 --
