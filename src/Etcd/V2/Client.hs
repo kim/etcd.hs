@@ -42,12 +42,14 @@ module Etcd.V2.Client
 where
 
 import           Control.Exception
+import           Control.Lens               (view)
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Except
 import           Data.Aeson                 (eitherDecode)
 import qualified Data.ByteString.Lazy       as BS
 import           Data.Text                  (Text)
 import qualified Etcd.V2.Internal.API       as API
+import           Etcd.V2.Lens               (HasEnv (..))
 import           Etcd.V2.Types
 import           Network.HTTP.Client
 import           Network.HTTP.Types.Status  (Status (..))
@@ -55,7 +57,7 @@ import           Servant.API
 import           Servant.Client
 
 
-type EtcdM = ReaderT Env (ExceptT EtcdError IO)
+type EtcdM e = ReaderT e (ExceptT EtcdError IO)
 
 -- | Construct a new environment from a URL string.
 --
@@ -65,7 +67,7 @@ type EtcdM = ReaderT Env (ExceptT EtcdError IO)
 newEtcdEnv :: String -> IO Env
 newEtcdEnv url = Env <$> newManager defaultManagerSettings <*> parseBaseUrl url
 
-runEtcdM :: Env -> EtcdM a -> IO (Either EtcdError a)
+runEtcdM :: HasEnv e => e -> EtcdM e a -> IO (Either EtcdError a)
 runEtcdM e f = runExceptT $ runReaderT f e
 
 
@@ -73,26 +75,26 @@ runEtcdM e f = runExceptT $ runReaderT f e
 -- Keyspace API
 --------------------------------------------------------------------------------
 
-getKey :: Key -> GetOptions -> EtcdM ResponseAndMetadata
+getKey :: HasEnv e => Key -> GetOptions -> EtcdM e ResponseAndMetadata
 getKey k = keyspace . API.getKey k
 
-putKey :: Key -> PutOptions -> EtcdM ResponseAndMetadata
+putKey :: HasEnv e => Key -> PutOptions -> EtcdM e ResponseAndMetadata
 putKey k = keyspace . API.putKey k
 
-postKey :: Key -> PostOptions -> EtcdM ResponseAndMetadata
+postKey :: HasEnv e => Key -> PostOptions -> EtcdM e ResponseAndMetadata
 postKey k = keyspace . API.postKey k
 
-deleteKey :: Key -> DeleteOptions -> EtcdM ResponseAndMetadata
+deleteKey :: HasEnv e => Key -> DeleteOptions -> EtcdM e ResponseAndMetadata
 deleteKey k = keyspace . API.deleteKey k
 
-keyExists :: Key -> EtcdM Bool
+keyExists :: HasEnv e => Key -> EtcdM e Bool
 keyExists k = call $ \mgr url ->
     (const True <$> API.keyExists k mgr url) `catchE` notFound
   where
     notFound (FailureResponse (Status 404 _) _ _) = pure False
     notFound e                                    = throwE e
 
-watchKey :: Key -> WatchOptions -> EtcdM ResponseAndMetadata
+watchKey :: HasEnv e => Key -> WatchOptions -> EtcdM e ResponseAndMetadata
 watchKey k = keyspace . API.watchKey k
 
 
@@ -100,16 +102,16 @@ watchKey k = keyspace . API.watchKey k
 -- Members API
 --------------------------------------------------------------------------------
 
-listMembers :: EtcdM Members
+listMembers :: HasEnv e => EtcdM e Members
 listMembers = call API.listMembers
 
-addMembers :: PeerURLs -> EtcdM Member
+addMembers :: HasEnv e => PeerURLs -> EtcdM e Member
 addMembers = call . API.addMembers
 
-deleteMember :: Text -> EtcdM NoContent
+deleteMember :: HasEnv e => Text -> EtcdM e NoContent
 deleteMember = call . API.deleteMember
 
-updateMember :: Text -> PeerURLs -> EtcdM NoContent
+updateMember :: HasEnv e => Text -> PeerURLs -> EtcdM e NoContent
 updateMember mid = call . API.updateMember mid
 
 
@@ -117,10 +119,10 @@ updateMember mid = call . API.updateMember mid
 -- Admin API
 --------------------------------------------------------------------------------
 
-getVersion :: EtcdM Version
+getVersion :: HasEnv e => EtcdM e Version
 getVersion = call API.getVersion
 
-getHealth :: EtcdM Health
+getHealth :: HasEnv e => EtcdM e Health
 getHealth = call API.getHealth
 
 
@@ -128,13 +130,13 @@ getHealth = call API.getHealth
 -- Stats API
 --------------------------------------------------------------------------------
 
-leaderStats :: EtcdM LeaderStats
+leaderStats :: HasEnv e => EtcdM e LeaderStats
 leaderStats = call API.leaderStats
 
-selfStats :: EtcdM SelfStats
+selfStats :: HasEnv e => EtcdM e SelfStats
 selfStats = call API.selfStats
 
-storeStats :: EtcdM StoreStats
+storeStats :: HasEnv e => EtcdM e StoreStats
 storeStats = call API.storeStats
 
 --------------------------------------------------------------------------------
@@ -142,8 +144,9 @@ storeStats = call API.storeStats
 --------------------------------------------------------------------------------
 
 keyspace
-    :: (Manager -> BaseUrl -> ClientM API.KeyspaceResponse)
-    -> EtcdM ResponseAndMetadata
+    :: HasEnv e
+    => (Manager -> BaseUrl -> ClientM API.KeyspaceResponse)
+    -> EtcdM e ResponseAndMetadata
 keyspace f = call $ \mgr url -> do
     rs <- f mgr url
     return $ responseAndMetadata rs
@@ -167,9 +170,10 @@ meta (HCons (Header clusterID)
       }
 meta _ = Nothing
 
-call :: (Manager -> BaseUrl -> ClientM a) -> EtcdM a
+call :: HasEnv e => (Manager -> BaseUrl -> ClientM a) -> EtcdM e a
 call f = do
-    Env mgr url <- ask
+    mgr <- view envManager
+    url <- view envBaseUrl
     lift . withExceptT mapErrors $
         f mgr url
   where

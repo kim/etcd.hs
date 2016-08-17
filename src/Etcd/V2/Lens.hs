@@ -8,8 +8,7 @@
 
 module Etcd.V2.Lens
     ( -- * Environment
-      envManager
-    , envBaseUrl
+      HasEnv (..)
 
       -- * Responses
       -- ** Success Response
@@ -158,8 +157,7 @@ import Data.Word
 import Etcd.V2.Types
 
 
-makeLenses ''Env
-
+makeClassy ''Env
 makePrisms ''EtcdError
 makeLenses ''Node
 makeLenses ''Response
