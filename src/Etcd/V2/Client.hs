@@ -38,6 +38,7 @@ module Etcd.V2.Client
 
       -- * Re-exports
     , module Etcd.V2.Types
+    , HasEnv (..)
     )
 where
 

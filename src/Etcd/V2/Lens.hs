@@ -151,13 +151,21 @@ module Etcd.V2.Lens
     )
 where
 
---import Control.Exception
 import Control.Lens
 import Data.Word
 import Etcd.V2.Types
+import Network.HTTP.Client (Manager)
+import Servant.Client      (BaseUrl)
 
 
-makeClassy ''Env
+class HasEnv a where
+    envManager :: Getting Manager a Manager
+    envBaseUrl :: Getting BaseUrl a BaseUrl
+
+instance HasEnv Env where
+    envManager = to _envManager
+    envBaseUrl = to _envBaseUrl
+
 makePrisms ''EtcdError
 makeLenses ''Node
 makeLenses ''Response
